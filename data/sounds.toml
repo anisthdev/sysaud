@@ -16,6 +16,8 @@
 "bluetooth.device-disconnected" = "device-removed"
 "bluetooth.adapter-on" = "service-login"
 "bluetooth.adapter-off" = "service-logout"
+"audio.mute-changed" = "audio-volume-change"
+"audio.volume-changed" = "audio-volume-change"
 "usb.device-plugged" = "device-added"
 "usb.device-unplugged" = "device-removed"
 "session.login" = "desktop-login"

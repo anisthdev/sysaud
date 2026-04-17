@@ -6,6 +6,7 @@ use crate::detectors::context::DetectorContext;
 use crate::detectors::detector::Detector;
 
 mod bluetooth;
+mod audio;
 pub mod context;
 pub mod detector;
 mod disk;
@@ -58,6 +59,7 @@ impl DetectorRegistry {
         self.spawn_with_supervision::<power::PowerDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
         self.spawn_with_supervision::<power::BatteryDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
         self.spawn_with_supervision::<bluetooth::BluetoothDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
+        self.spawn_with_supervision::<audio::AudioDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
         self.spawn_with_supervision::<usb::UsbDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
         self.spawn_with_supervision::<disk::DiskDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
         self.spawn_with_supervision::<display::DisplayDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
