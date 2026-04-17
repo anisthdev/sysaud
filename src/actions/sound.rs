@@ -3,6 +3,7 @@ use crate::event::handler::EventHandler;
 use crate::event::Event;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::process::Command;
 
 static AUDIO_EXTENSIONS: &[&str] = &["oga", ".ogg", ".wav", ".flac", ".mp3"];
 
@@ -90,30 +91,31 @@ fn play_file(path: PathBuf) {
 
     if player == "pw-play" {
         let volume = get_system_volume().unwrap_or(1.0);
+        let path_str = path.to_str().unwrap_or("").to_string();
 
-        let result = std::process::Command::new(player)
-            .args([
-                "--volume",
-                &format!("{:.2}", volume),
-                path.to_str().unwrap_or(""),
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-
-        if let Ok(mut child) = result {
-            let _ = child.wait();
-        }
+        tokio::spawn(async move {
+            if let Ok(mut child) = Command::new(player)
+                .args(["--volume", &format!("{:.2}", volume), &path_str])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                let _ = child.wait().await;
+            }
+        });
     } else {
-        let result = std::process::Command::new(player)
-            .arg(&path)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+        let path_str = path.to_str().unwrap_or("").to_string();
 
-        if let Ok(mut child) = result {
-            let _ = child.wait();
-        }
+        tokio::spawn(async move {
+            if let Ok(mut child) = Command::new(player)
+                .arg(&path_str)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                let _ = child.wait().await;
+            }
+        });
     }
 }
 
