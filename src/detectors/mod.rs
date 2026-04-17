@@ -5,6 +5,7 @@ use crate::event::Event;
 use crate::detectors::context::DetectorContext;
 use crate::detectors::detector::Detector;
 
+mod audio;
 mod bluetooth;
 pub mod context;
 pub mod detector;
@@ -59,6 +60,7 @@ impl DetectorRegistry {
         self.spawn_with_supervision::<usb::UsbDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
         self.spawn_with_supervision::<disk::DiskDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
         self.spawn_with_supervision::<display::DisplayDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
+        self.spawn_with_supervision::<audio::AudioDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
 
         tracing::info!("Detector registry started with all detectors");
         Ok(())

@@ -9,6 +9,7 @@ license=('MIT')
 depends=(
     'dbus'
     'udev'
+    'pipewire'
 )
 optdepends=(
     'pipewire-pulse: audio playback via pw-play'
@@ -16,7 +17,7 @@ optdepends=(
     'alsa-utils: audio playback via aplay (fallback)'
     'libpulse: volume control and playback'
 )
-makedepends=('cargo')
+makedepends=('cargo' 'pkg-config')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
