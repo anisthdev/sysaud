@@ -15,6 +15,8 @@ const NOTIFY_IFACE: &str = "org.freedesktop.Notifications";
 
 const EVENT_APP_NAMES: &[(&str, &str)] = &[
     ("display.brightness-changed", "sysaud-brightness-notification"),
+    ("audio.volume-changed", "volume-notification"),
+    ("audio.mute-changed", "volume-notification"),
 ];
 
 const USB_TYPE_ICONS: &[(&str, &str)] = &[
@@ -39,7 +41,7 @@ static CURRENT_ICON_THEME: Lazy<Option<String>> = Lazy::new(|| {
             } else {
                 Some(theme.to_string())
             }
-        })
+    })
 });
 
 pub struct NotifyHandler {
@@ -219,8 +221,6 @@ pub fn send_notification(
     event: &Event,
     conn: Arc<Connection>,
 ) {
-    let conn = conn;
-
     let app_name = get_app_name(&event.id.as_str(), &event.id.category);
     
     let mut detail = event.detail.clone();
@@ -234,13 +234,37 @@ pub fn send_notification(
             detail.insert("type_icon".to_string(), type_icon.to_string());
         }
     }
+
+    if let Some(volume_str) = detail.get("volume") {
+        if let Ok(volume) = volume_str.parse::<i32>() {
+            let volume_icon = if volume < 30 {
+                "audio-volume-low"
+            } else if volume < 70 {
+                "audio-volume-medium"
+            } else {
+                "audio-volume-high"
+            };
+            detail.insert("volume_icon".to_string(), volume_icon.to_string());
+        }
+    }
+
+    if let Some(muted_str) = detail.get("muted") {
+        let muted = muted_str == "true";
+        detail.insert(
+            "muted_str".to_string(),
+            if muted { "Muted" } else { "Unmuted" }.to_string(),
+        );
+        detail.insert(
+            "muted_icon".to_string(),
+            if muted { "audio-volume-muted" } else { "audio-volume-high" }.to_string(),
+        );
+    }
     
     let summary = expand_template(summary, &detail);
     let body = expand_template(body, &detail);
     let icon = expand_template(icon, &detail);
-    let event_id = event.id.as_str();
-
     let mut hints: HashMap<String, Value<'_>> = HashMap::new();
+    let event_id = event.id.as_str();
     
     if !icon.is_empty() {
         let icon_path = resolve_icon_path(&icon);
@@ -252,8 +276,17 @@ pub fn send_notification(
             if let Ok(level) = level_str.parse::<i32>() {
                 hints.insert(String::from("value"), Value::new(level));
                 hints.insert(String::from("x-canonical-private-synchronous"), Value::new("brightness"));
+                hints.insert(String::from("urgency"), Value::new(0u8));
             }
         }
+    } else if event_id == "audio.volume-changed" {
+        if let Some(level_str) = event.detail.get("volume") {
+            if let Ok(level) = level_str.parse::<i32>() {
+                hints.insert(String::from("value"), Value::new(level));
+            }
+        }
+        hints.insert(String::from("x-canonical-private-synchronous"), Value::new("volume_notif"));
+        hints.insert(String::from("urgency"), Value::new(0u8));
     }
 
     tokio::spawn(async move {
