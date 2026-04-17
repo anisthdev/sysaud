@@ -45,75 +45,7 @@ impl Detector for DisplayDetector {
         {
             let has_backlight = self.backlight_device.lock().is_some();
             if has_backlight {
-                let _backlight_device = self.backlight_device.clone();
-                
-                std::thread::spawn(move || {
-                    let monitor = match udev::MonitorBuilder::new() {
-                        Ok(m) => m,
-                        Err(e) => {
-                            tracing::error!("Display detector: backlight failed to create monitor: {}", e);
-                            return;
-                        }
-                    };
-
-                    let socket = match monitor.match_subsystem("backlight") {
-                        Ok(m) => match m.listen() {
-                            Ok(s) => s,
-                            Err(e) => {
-                                tracing::error!("Display detector: backlight failed to listen: {}", e);
-                                return;
-                            }
-                        },
-                        Err(e) => {
-                            tracing::error!("Display detector: backlight failed to match: {}", e);
-                            return;
-                        }
-                    };
-
-                    tracing::info!("Display detector: monitoring backlight");
-
-                    let mut poll = match Poll::new() {
-                        Ok(p) => p,
-                        Err(e) => {
-                            tracing::error!("Display detector: backlight poll create failed: {}", e);
-                            return;
-                        }
-                    };
-
-                    let fd = socket.as_raw_fd();
-                    let mut source = SourceFd(&fd);
-                    if let Err(e) = poll.registry().register(&mut source, Token(0), Interest::READABLE) {
-                        tracing::error!("Display detector: backlight register failed: {}", e);
-                        return;
-                    }
-
-                    let mut events = Events::with_capacity(10);
-
-                    loop {
-                        match poll.poll(&mut events, Some(Duration::from_secs(1))) {
-                            Ok(_) => {}
-                            Err(e) => {
-                                tracing::warn!("Display detector: backlight poll error: {}", e);
-                                break;
-                            }
-                        }
-
-                        for _ in &events {
-                            for _ in 0..10 {
-                                let next = socket.iter().next();
-                                match next {
-                                    Some(event) => {
-                                        if event.event_type() != udev::EventType::Change {
-                                            continue;
-                                        }
-                                        let _ = backlight_tx_clone.try_send(());
-                                    }
-                                    None => break,
-                                }
-                            }
-                        }
-                    }
-                });
+                std::thread::spawn(move || run_backlight_monitor(backlight_tx_clone));
             }
         }
 
@@ -154,6 +86,74 @@ impl Detector for DisplayDetector {
     }
 
     async fn stop(&self) {}
+}
+
+fn run_backlight_monitor(backlight_tx: mpsc::Sender<()>) {
+    let monitor = match udev::MonitorBuilder::new() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!("Display detector: backlight failed to create monitor: {}", e);
+            return;
+        }
+    };
+
+    let socket = match monitor.match_subsystem("backlight") {
+        Ok(m) => match m.listen() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Display detector: backlight failed to listen: {}", e);
+                return;
+            }
+        },
+        Err(e) => {
+            tracing::error!("Display detector: backlight failed to match: {}", e);
+            return;
+        }
+    };
+
+    tracing::info!("Display detector: monitoring backlight");
+
+    let mut poll = match Poll::new() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("Display detector: backlight poll create failed: {}", e);
+            return;
+        }
+    };
+
+    let fd = socket.as_raw_fd();
+    let mut source = SourceFd(&fd);
+    if let Err(e) = poll.registry().register(&mut source, Token(0), Interest::READABLE) {
+        tracing::error!("Display detector: backlight register failed: {}", e);
+        return;
+    }
+
+    let mut events = Events::with_capacity(10);
+
+    loop {
+        match poll.poll(&mut events, Some(Duration::from_secs(1))) {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("Display detector: backlight poll error: {}", e);
+                break;
+            }
+        }
+
+        for _ in &events {
+            for _ in 0..10 {
+                let next = socket.iter().next();
+                match next {
+                    Some(event) => {
+                        if event.event_type() != udev::EventType::Change {
+                            continue;
+                        }
+                        let _ = backlight_tx.try_send(());
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
 }
 
 impl DisplayDetector {

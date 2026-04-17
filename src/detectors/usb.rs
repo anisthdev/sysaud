@@ -33,117 +33,7 @@ impl Detector for UsbDetector {
         let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let running_thread = running.clone();
 
-        std::thread::spawn(move || {
-            let monitor = match udev::MonitorBuilder::new() {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::error!("USB detector: failed to create monitor: {}", e);
-                    return;
-                }
-            };
-
-            let socket = match monitor.match_subsystem("usb") {
-                Ok(m) => match m.listen() {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::error!("USB detector: failed to listen: {}", e);
-                        return;
-                    }
-                },
-                Err(e) => {
-                    tracing::error!("USB detector: failed to match subsystem: {}", e);
-                    return;
-                }
-            };
-
-            let fd = socket.as_raw_fd();
-            tracing::info!("USB detector: monitoring udev for USB devices (fd: {})", fd);
-
-            let mut poll = match Poll::new() {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::error!("USB detector: failed to create poll: {}", e);
-                    return;
-                }
-            };
-
-            let mut source = SourceFd(&fd);
-            if let Err(e) = poll.registry().register(&mut source, Token(0), Interest::READABLE) {
-                tracing::error!("USB detector: failed to register source: {}", e);
-                return;
-            }
-
-            let mut events = Events::with_capacity(10);
-
-            tracing::info!("USB detector: starting poll loop");
-
-            loop {
-                if !running_thread.load(std::sync::atomic::Ordering::SeqCst) {
-                    break;
-                }
-                match poll.poll(&mut events, Some(Duration::from_secs(1))) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!("USB detector: poll error: {}", e);
-                        break;
-                    }
-                }
-
-                for event in &events {
-                    if event.is_readable() {
-                        tracing::debug!("USB detector: socket is readable, reading event");
-
-                        for _ in 0..10 {
-                            let event = socket.iter().next();
-                            match event {
-                                Some(event) => {
-                                    let event_type = event.event_type();
-                                    tracing::debug!("USB detector: received event type={:?}", event_type);
-
-                                    if event_type != udev::EventType::Add && event_type != udev::EventType::Remove {
-                                        tracing::debug!("USB detector: ignoring non add/remove event");
-                                        continue;
-                                    }
-
-                                    let device = event.device();
-                                    tracing::debug!("USB detector: device={:?}", device.syspath());
-
-                                    if device.property_value("DEVTYPE").map(|s| s != "usb_device").unwrap_or(true) {
-                                        tracing::debug!("USB detector: skipping non-usb_device devtype");
-                                        continue;
-                                    }
-
-                                    let vendor = device.property_value("ID_VENDOR_FROM_DATABASE")
-                                        .or_else(|| device.property_value("ID_VENDOR"))
-                                        .map(|s| s.to_string_lossy().into_owned())
-                                        .unwrap_or_else(|| "unknown".to_string());
-
-                                    let model = device.property_value("ID_MODEL_FROM_DATABASE")
-                                        .or_else(|| device.property_value("ID_MODEL"))
-                                        .map(|s| s.to_string_lossy().into_owned())
-                                        .unwrap_or_else(|| "unknown".to_string());
-
-                                    let sys_path = device.syspath().to_path_buf();
-                                    let action = event_type;
-
-                                    tracing::info!("USB detector: {} - {} {} ({})",
-                                        if action == udev::EventType::Add { "plugged" } else { "unplugged" },
-                                        vendor, model, sys_path.display());
-
-                                    if tx_clone.try_send((vendor, model, action.to_string(), sys_path)).is_err() {
-                                        tracing::warn!("USB detector: channel send failed");
-                                    }
-                                }
-                                None => {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            tracing::info!("USB detector: poll loop ended");
-        });
+        std::thread::spawn(move || run_usb_monitor(tx_clone, running_thread));
 
         loop {
             tokio::select! {
@@ -218,6 +108,121 @@ impl Detector for UsbDetector {
     }
 
     async fn stop(&self) {}
+}
+
+fn run_usb_monitor(
+    tx_clone: mpsc::Sender<(String, String, String, std::path::PathBuf)>,
+    running_thread: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let monitor = match udev::MonitorBuilder::new() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!("USB detector: failed to create monitor: {}", e);
+            return;
+        }
+    };
+
+    let socket = match monitor.match_subsystem("usb") {
+        Ok(m) => match m.listen() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("USB detector: failed to listen: {}", e);
+                return;
+            }
+        },
+        Err(e) => {
+            tracing::error!("USB detector: failed to match subsystem: {}", e);
+            return;
+        }
+    };
+
+    let fd = socket.as_raw_fd();
+    tracing::info!("USB detector: monitoring udev for USB devices (fd: {})", fd);
+
+    let mut poll = match Poll::new() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("USB detector: failed to create poll: {}", e);
+            return;
+        }
+    };
+
+    let mut source = SourceFd(&fd);
+    if let Err(e) = poll.registry().register(&mut source, Token(0), Interest::READABLE) {
+        tracing::error!("USB detector: failed to register source: {}", e);
+        return;
+    }
+
+    let mut events = Events::with_capacity(10);
+
+    tracing::info!("USB detector: starting poll loop");
+
+    loop {
+        if !running_thread.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        match poll.poll(&mut events, Some(Duration::from_secs(1))) {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("USB detector: poll error: {}", e);
+                break;
+            }
+        }
+
+        for event in &events {
+            if event.is_readable() {
+                tracing::debug!("USB detector: socket is readable, reading event");
+
+                for _ in 0..10 {
+                    let event = socket.iter().next();
+                    match event {
+                        Some(event) => {
+                            let event_type = event.event_type();
+                            tracing::debug!("USB detector: received event type={:?}", event_type);
+
+                            if event_type != udev::EventType::Add && event_type != udev::EventType::Remove {
+                                tracing::debug!("USB detector: ignoring non add/remove event");
+                                continue;
+                            }
+
+                            let device = event.device();
+                            tracing::debug!("USB detector: device={:?}", device.syspath());
+
+                            if device.property_value("DEVTYPE").map(|s| s != "usb_device").unwrap_or(true) {
+                                tracing::debug!("USB detector: skipping non-usb_device devtype");
+                                continue;
+                            }
+
+                            let vendor = device.property_value("ID_VENDOR_FROM_DATABASE")
+                                .or_else(|| device.property_value("ID_VENDOR"))
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| "unknown".to_string());
+
+                            let model = device.property_value("ID_MODEL_FROM_DATABASE")
+                                .or_else(|| device.property_value("ID_MODEL"))
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| "unknown".to_string());
+
+                            let sys_path = device.syspath().to_path_buf();
+                            let action = event_type;
+
+                            tracing::info!("USB detector: {} - {} {} ({})",
+                                if action == udev::EventType::Add { "plugged" } else { "unplugged" },
+                                vendor, model, sys_path.display());
+
+                            if tx_clone.try_send((vendor, model, action.to_string(), sys_path)).is_err() {
+                                tracing::warn!("USB detector: channel send failed");
+                            }
+                        }
+                        None => {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    tracing::info!("USB detector: poll loop ended");
 }
 
 const DEVICE_TYPE_CHECKS: &[(&str, &str)] = &[

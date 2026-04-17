@@ -3,10 +3,11 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use futures_util::StreamExt;
-use zbus::MessageStream;
 use crate::event::Event;
+use crate::dbus;
 use crate::detectors::context::DetectorContext;
 use crate::detectors::detector::Detector;
+use crate::detectors::map_state::{MapTransition, StateMap};
 
 const UDISKS_BUS: &str = "org.freedesktop.UDisks2";
 const UDISKS_FS_IFACE: &str = "org.freedesktop.UDisks2.Filesystem";
@@ -15,7 +16,7 @@ const UDISKS_BLOCK_IFACE: &str = "org.freedesktop.UDisks2.Block";
 #[derive(Clone)]
 pub struct DiskDetector {
     event_tx: mpsc::Sender<Event>,
-    mount_points: Arc<tokio::sync::Mutex<HashMap<String, Vec<String>>>>,
+    mount_points: StateMap<String, Vec<String>>,
 }
 
 impl Detector for DiskDetector {
@@ -26,21 +27,16 @@ impl Detector for DiskDetector {
     fn new(event_tx: mpsc::Sender<Event>) -> Self {
         Self {
             event_tx,
-            mount_points: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            mount_points: StateMap::new(),
         }
     }
 
     async fn start(self: Arc<Self>, ctx: DetectorContext, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
-        let dbus_proxy = zbus::fdo::DBusProxy::new(&ctx.system_bus).await?;
-
         let rule = zbus::MatchRule::builder()
             .interface("org.freedesktop.DBus.Properties")?
             .member("PropertiesChanged")?
             .build();
-
-        dbus_proxy.add_match_rule(rule.clone()).await?;
-
-        let mut stream = MessageStream::from(&ctx.system_bus);
+        let mut stream = dbus::matched_stream(&ctx.system_bus, vec![rule.clone()]).await?;
 
         tracing::info!("Disk detector: subscribed to UDisks2 signals");
 
@@ -81,36 +77,51 @@ impl Detector for DiskDetector {
                     let path = msg.header().path().map(|p| p.to_string()).unwrap_or_default();
                     
                     let mount_points = decode_mount_points(&changed);
-                    let mut tracked = self.mount_points.lock().await;
-                    let prev = tracked.get(&path).cloned().unwrap_or_default();
-                    
-                    if !mount_points.is_empty() && prev.is_empty() {
-                        let label = get_block_property(&ctx.system_bus, &path, "IdLabel").await;
-                        let device = get_block_property(&ctx.system_bus, &path, "Device").await;
-                        tracing::info!("Disk detector: mounted {} at {:?}", label, mount_points);
-                        let event = Event::new("disk", "mounted", {
-                            let mut m = HashMap::new();
-                            m.insert("label".to_string(), label);
-                            m.insert("device".to_string(), device);
-                            m.insert("mount_point".to_string(), mount_points[0].clone());
-                            m
-                        });
-                        let _ = self.event_tx.send(event).await;
-                    } else if mount_points.is_empty() && !prev.is_empty() {
-                        let label = get_block_property(&ctx.system_bus, &path, "IdLabel").await;
-                        let device = get_block_property(&ctx.system_bus, &path, "Device").await;
-                        tracing::info!("Disk detector: unmounted {} from {:?}", label, prev);
-                        let event = Event::new("disk", "unmounted", {
-                            let mut m = HashMap::new();
-                            m.insert("label".to_string(), label);
-                            m.insert("device".to_string(), device);
-                            m.insert("mount_point".to_string(), prev[0].clone());
-                            m
-                        });
-                        let _ = self.event_tx.send(event).await;
+                    match self.mount_points.update(path.clone(), mount_points.clone()) {
+                        MapTransition::Inserted => {
+                            if !mount_points.is_empty() {
+                                let label = get_block_property(&ctx.system_bus, &path, "IdLabel").await;
+                                let device = get_block_property(&ctx.system_bus, &path, "Device").await;
+                                tracing::info!("Disk detector: mounted {} at {:?}", label, mount_points);
+                                let event = Event::new("disk", "mounted", {
+                                    let mut m = HashMap::new();
+                                    m.insert("label".to_string(), label);
+                                    m.insert("device".to_string(), device);
+                                    m.insert("mount_point".to_string(), mount_points[0].clone());
+                                    m
+                                });
+                                let _ = self.event_tx.send(event).await;
+                            }
+                        }
+                        MapTransition::Unchanged => {}
+                        MapTransition::Updated { previous } => {
+                            if !mount_points.is_empty() && previous.is_empty() {
+                                let label = get_block_property(&ctx.system_bus, &path, "IdLabel").await;
+                                let device = get_block_property(&ctx.system_bus, &path, "Device").await;
+                                tracing::info!("Disk detector: mounted {} at {:?}", label, mount_points);
+                                let event = Event::new("disk", "mounted", {
+                                    let mut m = HashMap::new();
+                                    m.insert("label".to_string(), label);
+                                    m.insert("device".to_string(), device);
+                                    m.insert("mount_point".to_string(), mount_points[0].clone());
+                                    m
+                                });
+                                let _ = self.event_tx.send(event).await;
+                            } else if mount_points.is_empty() && !previous.is_empty() {
+                                let label = get_block_property(&ctx.system_bus, &path, "IdLabel").await;
+                                let device = get_block_property(&ctx.system_bus, &path, "Device").await;
+                                tracing::info!("Disk detector: unmounted {} from {:?}", label, previous);
+                                let event = Event::new("disk", "unmounted", {
+                                    let mut m = HashMap::new();
+                                    m.insert("label".to_string(), label);
+                                    m.insert("device".to_string(), device);
+                                    m.insert("mount_point".to_string(), previous[0].clone());
+                                    m
+                                });
+                                let _ = self.event_tx.send(event).await;
+                            }
+                        }
                     }
-                    
-                    tracked.insert(path, mount_points);
                 }
             }
         }

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use futures_util::StreamExt;
-use zbus::MessageStream;
 use crate::event::Event;
+use crate::dbus;
 use crate::detectors::context::DetectorContext;
 use crate::detectors::detector::Detector;
 use crate::detectors::state::{StateCell, StateTransition};
@@ -25,7 +25,6 @@ impl Detector for SessionDetector {
     }
 
     async fn start(self: Arc<Self>, ctx: DetectorContext, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
-        let dbus_proxy = zbus::fdo::DBusProxy::new(&ctx.system_bus).await?;
         let config = ctx.config.clone();
 
         let self_for_poll = self.clone();
@@ -70,8 +69,8 @@ impl Detector for SessionDetector {
                 .interface("org.freedesktop.ScreenSaver")?
                 .member("ActiveChanged")?
                 .build();
-            
-            let mut stream = MessageStream::from(&session_bus);
+
+            let mut stream = dbus::matched_stream(&session_bus, vec![rule.clone()]).await?;
 
             loop {
                 tokio::select! {
@@ -118,11 +117,7 @@ impl Detector for SessionDetector {
             .interface("org.freedesktop.login1.Session")?
             .path_namespace("/org/freedesktop/login1/session")?
             .build();
-
-        dbus_proxy.add_match_rule(prop_rule.clone()).await?;
-        dbus_proxy.add_match_rule(lock_rule.clone()).await?;
-
-        let mut stream = MessageStream::from(&ctx.system_bus);
+        let mut stream = dbus::matched_stream(&ctx.system_bus, vec![prop_rule.clone(), lock_rule.clone()]).await?;
 
         loop {
             tokio::select! {
@@ -217,15 +212,12 @@ impl Detector for SuspendDetector {
     }
 
     async fn start(self: Arc<Self>, ctx: DetectorContext, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
-        let dbus_proxy = zbus::fdo::DBusProxy::new(&ctx.system_bus).await?;
-
         let rule = zbus::MatchRule::builder()
             .interface("org.freedesktop.login1.Manager")?
             .member("PrepareForSleep")?
             .path("/org/freedesktop/login1")?
             .build();
-
-        dbus_proxy.add_match_rule(rule).await?;
+        dbus::register_match_rules(&ctx.system_bus, vec![rule]).await?;
 
         let proxy: zbus::Proxy = zbus::Proxy::new(
             &ctx.system_bus,

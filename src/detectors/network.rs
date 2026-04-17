@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use futures_util::StreamExt;
 use crate::event::Event;
+use crate::dbus;
 use crate::detectors::context::DetectorContext;
 use crate::detectors::detector::Detector;
+use crate::detectors::map_state::{MapTransition, StateMap};
 use crate::detectors::state::{StateCell, StateTransition};
 
 const NM_BUS: &str = "org.freedesktop.NetworkManager";
@@ -38,15 +39,12 @@ impl Detector for NetworkDetector {
     }
 
     async fn start(self: Arc<Self>, ctx: DetectorContext, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
-        let dbus_proxy = zbus::fdo::DBusProxy::new(&ctx.system_bus).await?;
-
         let rule = zbus::MatchRule::builder()
             .interface(NM_IFACE)?
             .member("StateChanged")?
             .path(NM_PATH)?
             .build();
-
-        dbus_proxy.add_match_rule(rule).await?;
+        dbus::register_match_rules(&ctx.system_bus, vec![rule]).await?;
 
         let proxy: zbus::Proxy = zbus::Proxy::new(
             &ctx.system_bus,
@@ -159,7 +157,7 @@ impl NetworkDetector {
 #[derive(Clone)]
 pub struct VpnDetector {
     event_tx: mpsc::Sender<Event>,
-    vpn_states: Arc<Mutex<HashMap<String, u32>>>,
+    vpn_states: StateMap<String, u32>,
 }
 
 impl Detector for VpnDetector {
@@ -168,18 +166,15 @@ impl Detector for VpnDetector {
     }
 
     fn new(event_tx: mpsc::Sender<Event>) -> Self {
-        Self { event_tx, vpn_states: Arc::new(Mutex::new(HashMap::new())) }
+        Self { event_tx, vpn_states: StateMap::new() }
     }
 
     async fn start(self: Arc<Self>, ctx: DetectorContext, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
-        let dbus_proxy = zbus::fdo::DBusProxy::new(&ctx.system_bus).await?;
-
         let rule = zbus::MatchRule::builder()
             .interface(NM_VPN_CONN_IFACE)?
             .member("VpnStateChanged")?
             .build();
-
-        dbus_proxy.add_match_rule(rule).await?;
+        dbus::register_match_rules(&ctx.system_bus, vec![rule]).await?;
 
         let proxy: zbus::Proxy = zbus::Proxy::new(
             &ctx.system_bus,
@@ -217,12 +212,9 @@ impl Detector for VpnDetector {
 
                     let path = signal.header().path().map(|p| p.to_string()).unwrap_or_default();
 
-                    let mut vpn_states = self.vpn_states.lock().await;
-                    if vpn_states.get(&path) == Some(&state) {
+                    if matches!(self.vpn_states.update(path.clone(), state), MapTransition::Unchanged) {
                         continue;
                     }
-                    vpn_states.insert(path.clone(), state);
-                    drop(vpn_states);
 
                     let mut details = HashMap::new();
                     if let Ok(name) = self.get_property::<String>(&ctx.system_bus, NM_BUS, path.as_str(), NM_ACTIVE_CONN_IFACE, "Id").await {

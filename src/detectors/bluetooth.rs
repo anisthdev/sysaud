@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use futures_util::StreamExt;
-use zbus::MessageStream;
 use crate::event::Event;
+use crate::dbus;
 use crate::detectors::context::DetectorContext;
 use crate::detectors::detector::Detector;
+use crate::detectors::map_state::{MapTransition, StateMap};
 
 const BLUEZ_BUS: &str = "org.bluez";
 const BLUEZ_DEVICE_IFACE: &str = "org.bluez.Device1";
@@ -16,8 +16,8 @@ const BLUEZ_ADAPTER_IFACE: &str = "org.bluez.Adapter1";
 #[derive(Clone)]
 pub struct BluetoothDetector {
     event_tx: mpsc::Sender<Event>,
-    device_states: Arc<Mutex<HashMap<String, bool>>>,
-    adapter_states: Arc<Mutex<HashMap<String, bool>>>,
+    device_states: StateMap<String, bool>,
+    adapter_states: StateMap<String, bool>,
 }
 
 impl Detector for BluetoothDetector {
@@ -28,22 +28,17 @@ impl Detector for BluetoothDetector {
     fn new(event_tx: mpsc::Sender<Event>) -> Self {
         Self {
             event_tx,
-            device_states: Arc::new(Mutex::new(HashMap::new())),
-            adapter_states: Arc::new(Mutex::new(HashMap::new())),
+            device_states: StateMap::new(),
+            adapter_states: StateMap::new(),
         }
     }
 
     async fn start(self: Arc<Self>, ctx: DetectorContext, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
-        let dbus_proxy = zbus::fdo::DBusProxy::new(&ctx.system_bus).await?;
-
         let rule = zbus::MatchRule::builder()
             .interface("org.freedesktop.DBus.Properties")?
             .member("PropertiesChanged")?
             .build();
-
-        dbus_proxy.add_match_rule(rule.clone()).await?;
-
-        let mut stream = MessageStream::from(&ctx.system_bus);
+        let mut stream = dbus::matched_stream(&ctx.system_bus, vec![rule.clone()]).await?;
 
         tracing::info!("Bluetooth detector: monitoring BlueZ signals...");
 
@@ -89,12 +84,9 @@ impl BluetoothDetector {
     async fn handle_device(&self, bus: &zbus::Connection, path: &str, changed: HashMap<String, zvariant::OwnedValue>) {
         if let Some(value) = changed.get("Connected") {
             if let Ok(is_connected) = value.downcast_ref::<bool>() {
-                let mut states = self.device_states.lock().await;
-                if states.get(path) == Some(&is_connected) {
+                if matches!(self.device_states.update(path.to_string(), is_connected), MapTransition::Unchanged) {
                     return;
                 }
-                states.insert(path.to_string(), is_connected);
-                drop(states);
 
                 let mut details = HashMap::new();
                 details.insert("path".to_string(), path.to_string());
@@ -124,12 +116,9 @@ impl BluetoothDetector {
     async fn handle_adapter(&self, bus: &zbus::Connection, path: &str, changed: HashMap<String, zvariant::OwnedValue>) {
         if let Some(value) = changed.get("Powered") {
             if let Ok(powered) = value.downcast_ref::<bool>() {
-                let mut states = self.adapter_states.lock().await;
-                if states.get(path) == Some(&powered) {
+                if matches!(self.adapter_states.update(path.to_string(), powered), MapTransition::Unchanged) {
                     return;
                 }
-                states.insert(path.to_string(), powered);
-                drop(states);
 
                 let mut details = HashMap::new();
                 details.insert("path".to_string(), path.to_string());

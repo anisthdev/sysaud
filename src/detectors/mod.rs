@@ -10,6 +10,7 @@ pub mod context;
 pub mod detector;
 mod disk;
 mod display;
+mod map_state;
 mod network;
 mod power;
 mod state;
