@@ -1,0 +1,113 @@
+.TH SYSAUD "1" "April 2026" "sysaud 0.1.0" "System Manual"
+.SH NAME
+sysaud \- Linux system event sound and notification daemon
+.SH SYNOPSIS
+.B sysaud
+[\fIOPTIONS\fR]
+.PP
+.B sysaud
+\fBcheck\fR
+.PP
+.B sysaud
+\fBlist-events\fR
+[\fB--json\fR]
+.SH DESCRIPTION
+.B sysaud
+is a daemon that listens for system events (via D-Bus, udev, etc.) and fires
+sounds, desktop notifications, or custom scripts in response. It is configured
+via YAML.
+.SH COMMANDS
+.TP
+\fBcheck\fR
+Validate the configuration file.
+.TP
+\fBlist-events\fR
+List all supported events.
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Enable verbose output.
+.TP
+\fB\-\-no-sound\fR
+Disable sound playback.
+.TP
+\fB\-\-no-notify\fR
+Disable desktop notifications.
+.TP
+\fB\-\-json\fR
+Output events in JSON format (used with list-events).
+.TP
+\fB\-\-config\fR \fIPATH\fR
+Specify a custom configuration file path.
+.SH CONFIGURATION
+The default configuration path is
+.BR ~/.config/sysaud/config.yaml .
+.PP
+Example configuration:
+.PP
+.nf
+    daemon:
+      lock_app: hyprlock
+      log_file: ~/.local/share/sysaud/events.log
+
+    sound:
+      enabled: true
+      theme: freedesktop
+      custom_dir: ~/sounds
+
+    notify:
+      enabled: true
+      timeout_ms: 4000
+
+    events:
+      power.ac-plugged:
+        sound: power-plug
+        icon: battery-full-charging
+        notify: true
+      power.ac-unplugged:
+        enabled: false
+.fi
+.SH SUPPORTED EVENTS
+.TP
+Power events:
+power.ac-plugged, power.ac-unplugged, power.battery-low,
+power.battery-critical, power.battery-action, power.battery-level
+.TP
+Network events:
+network.wifi-connected, network.network-connected,
+network.network-disconnected, network.vpn-connected,
+network.vpn-disconnected
+.TP
+Bluetooth events:
+bluetooth.device-connected, bluetooth.device-disconnected,
+bluetooth.adapter-on, bluetooth.adapter-off
+.TP
+USB events:
+usb.device-plugged, usb.device-unplugged
+.TP
+Session events:
+session.login, session.screen-locked, session.screen-unlocked,
+session.suspend, session.resume
+.TP
+Display/Disk events:
+display.brightness-changed, disk.mounted, disk.unmounted
+.SH SIGNALS
+.TP
+SIGTERM, SIGINT
+Graceful shutdown.
+.TP
+SIGHUP
+Hot reload configuration.
+.SH FILES
+.TP
+.B ~/.config/sysaud/config.yaml
+Default configuration file.
+.TP
+.B ~/.local/share/sysaud/events.log
+Event log file (if configured).
+.SH AUTHORS
+See LICENSE file for authors.
+.SH "SEE ALSO"
+.BR systemd (1),
+.BR dbus (1),
+.BR udev (1)
