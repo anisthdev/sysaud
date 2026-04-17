@@ -5,7 +5,6 @@ use crate::event::handler::EventHandler;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use once_cell::sync::Lazy;
 use zbus::Connection;
 use zvariant::Value;
 
@@ -27,24 +26,14 @@ const USB_TYPE_ICONS: &[(&str, &str)] = &[
     ("controller", "input-gaming"),
     ("phone", "phone"),
     ("storage", "drive-removable-media-usb"),
-    ("device", "device_usb"),
+    ("device", "drive-removable-media"),
 ];
 
-static CURRENT_ICON_THEME: Lazy<Option<String>> = Lazy::new(|| {
-    std::process::Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.interface", "icon-theme"])
-        .output()
-        .ok()
-        .and_then(|out| {
-            let theme: String = String::from_utf8_lossy(&out.stdout).into();
-            let theme = theme.trim().trim_matches('\'');
-            if theme.is_empty() || theme == "\"" {
-                None
-            } else {
-                Some(theme.to_string())
-            }
-    })
-});
+const ICON_ALIASES: &[(&str, &str)] = &[
+    ("battery-discharging", "battery-caution"),
+    ("bluetooth-disconnected", "bluetooth-active"),
+    ("device_usb", "drive-removable-media"),
+];
 
 pub struct NotifyHandler {
     config: SharedConfig,
@@ -123,12 +112,21 @@ fn get_app_name(event_id: &str, category: &str) -> String {
 
 fn expand_template(template: &str, detail: &HashMap<String, String>) -> String {
     let mut result = template.to_string();
-    
+
     for (key, value) in detail {
         let placeholder = format!("{{{key}}}");
         result = result.replace(&placeholder, value);
+
+        let float_placeholder = format!("{{{key}:.0f}}");
+        if result.contains(&float_placeholder) {
+            let formatted = value
+                .parse::<f64>()
+                .map(|number| format!("{number:.0}"))
+                .unwrap_or_else(|_| value.clone());
+            result = result.replace(&float_placeholder, &formatted);
+        }
     }
-    
+
     result.trim().to_string()
 }
 
@@ -136,6 +134,12 @@ fn resolve_icon_path(icon_name: &str) -> String {
     if icon_name.is_empty() {
         return String::new();
     }
+
+    let icon_name = ICON_ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == icon_name)
+        .map(|(_, canonical)| *canonical)
+        .unwrap_or(icon_name);
 
     let icon_path = Path::new(icon_name);
     if icon_path.is_absolute() {
@@ -155,12 +159,12 @@ fn resolve_icon_path(icon_name: &str) -> String {
     let subdirs = ["apps", "devices", "mimetypes", "places", "status", "legacy", "panel", "actions", "emotes", "animations"];
     let exts = ["svg", "png"];
 
-    if let Some(theme) = CURRENT_ICON_THEME.as_ref() {
+    if let Some(theme) = current_icon_theme() {
         for size in &sizes {
             for subdir in &subdirs {
                 for ext in &exts {
                     let candidate = PathBuf::from("/usr/share/icons")
-                        .join(theme)
+                        .join(&theme)
                         .join(size)
                         .join(subdir)
                         .join(format!("{icon_name}.{ext}"));
@@ -171,7 +175,7 @@ fn resolve_icon_path(icon_name: &str) -> String {
             }
             for ext in &exts {
                 let candidate = PathBuf::from("/usr/share/icons")
-                    .join(theme)
+                    .join(&theme)
                     .join(size)
                     .join(format!("{icon_name}.{ext}"));
                 if candidate.exists() {
@@ -213,6 +217,23 @@ fn resolve_icon_path(icon_name: &str) -> String {
     }
 
     icon_name.to_string()
+}
+
+fn current_icon_theme() -> Option<String> {
+    std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "icon-theme"])
+        .output()
+        .ok()
+        .and_then(|out| parse_icon_theme_output(&String::from_utf8_lossy(&out.stdout)))
+}
+
+fn parse_icon_theme_output(output: &str) -> Option<String> {
+    let theme = output.trim().trim_matches('\'');
+    if theme.is_empty() || theme == "\"" {
+        None
+    } else {
+        Some(theme.to_string())
+    }
 }
 
 pub fn send_notification(
@@ -270,7 +291,9 @@ pub fn send_notification(
     
     if !icon.is_empty() {
         let icon_path = resolve_icon_path(&icon);
-        hints.insert(String::from("image-path"), Value::new(icon_path));
+        if Path::new(&icon_path).is_absolute() {
+            hints.insert(String::from("image-path"), Value::new(icon_path));
+        }
     }
     
     if event_id == "display.brightness-changed" {
@@ -320,4 +343,31 @@ pub fn send_notification(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{expand_template, parse_icon_theme_output};
+    use std::collections::HashMap;
+
+    #[test]
+    fn expands_plain_placeholders() {
+        let detail = HashMap::from([("direction".to_string(), "charging".to_string())]);
+        assert_eq!(expand_template("{direction}", &detail), "charging");
+    }
+
+    #[test]
+    fn expands_numeric_placeholders_with_float_format() {
+        let detail = HashMap::from([("percentage".to_string(), "39.6".to_string())]);
+        assert_eq!(expand_template("Battery {percentage:.0f}%", &detail), "Battery 40%");
+    }
+
+    #[test]
+    fn parses_gsettings_icon_theme_output() {
+        assert_eq!(
+            parse_icon_theme_output("'Papirus'\n").as_deref(),
+            Some("Papirus")
+        );
+        assert_eq!(parse_icon_theme_output("''\n"), None);
+    }
 }

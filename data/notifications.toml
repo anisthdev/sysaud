@@ -3,7 +3,7 @@
 
 [defaults]
 "power.ac-plugged" = { summary = "Charger Connected", body = "", icon = "battery-full-charging" }
-"power.ac-unplugged" = { summary = "Charger Disconnected", body = "Running on battery", icon = "battery-discharging" }
+"power.ac-unplugged" = { summary = "Charger Disconnected", body = "Running on battery", icon = "battery-caution" }
 "power.battery-low" = { summary = "Battery Low", body = "{percentage:.0f}% remaining", icon = "battery-low" }
 "power.battery-critical" = { summary = "Battery Critical", body = "{percentage:.0f}% — plug in now", icon = "battery-caution" }
 "power.battery-action" = { summary = "Battery Empty", body = "System will hibernate soon", icon = "battery-empty" }

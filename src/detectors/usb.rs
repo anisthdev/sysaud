@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task;
@@ -15,7 +16,28 @@ use crate::detectors::detector::Detector;
 #[derive(Clone)]
 pub struct UsbDetector {
     event_tx: mpsc::Sender<Event>,
+    devices: Arc<Mutex<HashMap<String, UsbDeviceInfo>>>,
 }
+
+#[derive(Debug, Clone)]
+struct UsbDeviceInfo {
+    vendor: String,
+    model: String,
+    device_type: String,
+    cached_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct UsbMonitorEvent {
+    key: String,
+    vendor: String,
+    model: String,
+    action: String,
+    sys_path: std::path::PathBuf,
+}
+
+const USB_CACHE_TTL: Duration = Duration::from_secs(12 * 60 * 60);
+const USB_CACHE_MAX_ENTRIES: usize = 256;
 
 impl Detector for UsbDetector {
     fn name(&self) -> &'static str {
@@ -23,11 +45,14 @@ impl Detector for UsbDetector {
     }
 
     fn new(event_tx: mpsc::Sender<Event>) -> Self {
-        Self { event_tx }
+        Self {
+            event_tx,
+            devices: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     async fn start(self: Arc<Self>, _ctx: DetectorContext, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
-        let (tx, mut rx) = mpsc::channel::<(String, String, String, std::path::PathBuf)>(100);
+        let (tx, mut rx) = mpsc::channel::<UsbMonitorEvent>(100);
         let tx_clone = tx.clone();
         let mut tx = Some(tx);
         let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -38,7 +63,7 @@ impl Detector for UsbDetector {
         loop {
             tokio::select! {
                 msg = rx.recv() => {
-                    let (vendor, model, action, sys_path) = match msg {
+                    let UsbMonitorEvent { key, vendor, model, action, sys_path } = match msg {
                         Some(m) => m,
                         None => break,
                     };
@@ -47,6 +72,8 @@ impl Detector for UsbDetector {
 
                     if action == "add" {
                         tracing::debug!("USB detector: scheduling plug event for {} {}", vendor, model);
+                        let devices = self.devices.clone();
+                        let key_clone = key.clone();
                         let sys_path_clone = sys_path.clone();
                         let tx_clone = tx.clone();
                         let vendor_clone = vendor.clone();
@@ -58,14 +85,20 @@ impl Detector for UsbDetector {
                                     let dev_type = task::spawn_blocking(move || {
                                         classify_usb_device_from_syspath(&sys_path_clone)
                                     }).await.unwrap_or_else(|_| "device".to_string());
+                                    let info = UsbDeviceInfo {
+                                        vendor: vendor_clone.clone(),
+                                        model: model_clone.clone(),
+                                        device_type: dev_type.clone(),
+                                        cached_at: Instant::now(),
+                                    };
+                                    {
+                                        let mut guard = devices.lock();
+                                        prune_usb_cache(&mut guard);
+                                        guard.insert(key_clone.clone(), info);
+                                    }
+                                    tracing::debug!("USB detector: cached metadata for {}", key_clone);
                                     tracing::info!("USB detector: emitting device-plugged {} {} type={}", vendor_clone, model_clone, dev_type);
-                                    let event = Event::new("usb", "device-plugged", {
-                                        let mut m = HashMap::new();
-                                        m.insert("vendor".to_string(), vendor_clone);
-                                        m.insert("model".to_string(), model_clone);
-                                        m.insert("type".to_string(), dev_type);
-                                        m
-                                    });
+                                    let event = Event::new("usb", "device-plugged", make_usb_detail(vendor_clone, model_clone, dev_type));
                                     let _ = tx_clone.send(event).await;
                                 }
                                 _ = shutdown_plug.changed() => {
@@ -76,19 +109,38 @@ impl Detector for UsbDetector {
                             }
                         });
                     } else {
-                        tracing::debug!("USB detector: emitting device-unplugged for {} {}", vendor, model);
-                        let dev_type = task::spawn_blocking({
-                            let sys_path = sys_path.clone();
-                            move || classify_usb_device_from_syspath(&sys_path)
-                        }).await?;
-                        tracing::info!("USB detector: emitting device-unplugged {} {} type={}", vendor, model, dev_type);
-                        let event = Event::new("usb", "device-unplugged", {
-                            let mut m = HashMap::new();
-                            m.insert("vendor".to_string(), vendor);
-                            m.insert("model".to_string(), model);
-                            m.insert("type".to_string(), dev_type);
-                            m
-                        });
+                        let fallback = UsbDeviceInfo {
+                            vendor,
+                            model,
+                            device_type: "device".to_string(),
+                            cached_at: Instant::now(),
+                        };
+                        let info = {
+                            let mut guard = self.devices.lock();
+                            prune_usb_cache(&mut guard);
+                            guard.remove(&key)
+                        };
+                        let info = match info {
+                            Some(info) => {
+                                tracing::debug!("USB detector: using cached metadata for {}", key);
+                                info
+                            }
+                            None => {
+                                tracing::debug!("USB detector: cache miss for {}, using fallback metadata", key);
+                                fallback
+                            }
+                        };
+                        tracing::info!(
+                            "USB detector: emitting device-unplugged {} {} type={}",
+                            info.vendor,
+                            info.model,
+                            info.device_type
+                        );
+                        let event = Event::new(
+                            "usb",
+                            "device-unplugged",
+                            make_usb_detail(info.vendor, info.model, info.device_type),
+                        );
                         let _ = self.event_tx.send(event).await;
                     }
                 }
@@ -111,7 +163,7 @@ impl Detector for UsbDetector {
 }
 
 fn run_usb_monitor(
-    tx_clone: mpsc::Sender<(String, String, String, std::path::PathBuf)>,
+    tx_clone: mpsc::Sender<UsbMonitorEvent>,
     running_thread: Arc<std::sync::atomic::AtomicBool>,
 ) {
     let monitor = match udev::MonitorBuilder::new() {
@@ -204,13 +256,20 @@ fn run_usb_monitor(
                                 .unwrap_or_else(|| "unknown".to_string());
 
                             let sys_path = device.syspath().to_path_buf();
+                            let key = sys_path.to_string_lossy().into_owned();
                             let action = event_type;
 
                             tracing::info!("USB detector: {} - {} {} ({})",
                                 if action == udev::EventType::Add { "plugged" } else { "unplugged" },
                                 vendor, model, sys_path.display());
 
-                            if tx_clone.try_send((vendor, model, action.to_string(), sys_path)).is_err() {
+                            if tx_clone.try_send(UsbMonitorEvent {
+                                key,
+                                vendor,
+                                model,
+                                action: action.to_string(),
+                                sys_path,
+                            }).is_err() {
                                 tracing::warn!("USB detector: channel send failed");
                             }
                         }
@@ -232,6 +291,38 @@ const DEVICE_TYPE_CHECKS: &[(&str, &str)] = &[
     ("ID_MTP_DEVICE", "phone"),
     ("ID_PDA", "phone"),
 ];
+
+fn make_usb_detail(vendor: String, model: String, device_type: String) -> HashMap<String, String> {
+    let mut detail = HashMap::new();
+    detail.insert("vendor".to_string(), vendor);
+    detail.insert("model".to_string(), model);
+    detail.insert("type".to_string(), device_type);
+    detail
+}
+
+fn prune_usb_cache(cache: &mut HashMap<String, UsbDeviceInfo>) {
+    let now = Instant::now();
+    cache.retain(|_, info| now.duration_since(info.cached_at) < USB_CACHE_TTL);
+
+    if cache.len() <= USB_CACHE_MAX_ENTRIES {
+        return;
+    }
+
+    let mut oldest_key = None;
+    let mut oldest_time = now;
+
+    for (key, info) in cache.iter() {
+        if info.cached_at <= oldest_time {
+            oldest_time = info.cached_at;
+            oldest_key = Some(key.clone());
+        }
+    }
+
+    if let Some(key) = oldest_key {
+        tracing::debug!("USB detector: evicting stale cache entry {}", key);
+        cache.remove(&key);
+    }
+}
 
 fn classify_usb_device_from_syspath(sys_path: &std::path::Path) -> String {
     if let Some(device_type) = check_device_and_children(sys_path) {
@@ -288,4 +379,74 @@ fn is_usb_storage_device(sys_path: &std::path::Path) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unplug_uses_cached_metadata_when_available() {
+        let mut cache = HashMap::new();
+        cache.insert(
+            "/devices/mock/usb1".to_string(),
+            UsbDeviceInfo {
+                vendor: "Logitech".to_string(),
+                model: "MX Master".to_string(),
+                device_type: "mouse".to_string(),
+                cached_at: Instant::now(),
+            },
+        );
+
+        let fallback = UsbDeviceInfo {
+            vendor: "unknown".to_string(),
+            model: "unknown".to_string(),
+            device_type: "device".to_string(),
+            cached_at: Instant::now(),
+        };
+
+        let info = cache.remove("/devices/mock/usb1").unwrap_or(fallback);
+        let detail = make_usb_detail(info.vendor, info.model, info.device_type);
+
+        assert_eq!(detail.get("vendor").map(String::as_str), Some("Logitech"));
+        assert_eq!(detail.get("model").map(String::as_str), Some("MX Master"));
+        assert_eq!(detail.get("type").map(String::as_str), Some("mouse"));
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn unplug_falls_back_when_cache_misses() {
+        let mut cache: HashMap<String, UsbDeviceInfo> = HashMap::new();
+        let fallback = UsbDeviceInfo {
+            vendor: "unknown".to_string(),
+            model: "unknown".to_string(),
+            device_type: "device".to_string(),
+            cached_at: Instant::now(),
+        };
+
+        let info = cache.remove("/devices/mock/usb1").unwrap_or(fallback);
+        let detail = make_usb_detail(info.vendor, info.model, info.device_type);
+
+        assert_eq!(detail.get("vendor").map(String::as_str), Some("unknown"));
+        assert_eq!(detail.get("model").map(String::as_str), Some("unknown"));
+        assert_eq!(detail.get("type").map(String::as_str), Some("device"));
+    }
+
+    #[test]
+    fn prune_removes_expired_entries() {
+        let mut cache = HashMap::new();
+        cache.insert(
+            "/devices/mock/usb1".to_string(),
+            UsbDeviceInfo {
+                vendor: "Old".to_string(),
+                model: "Entry".to_string(),
+                device_type: "device".to_string(),
+                cached_at: Instant::now() - USB_CACHE_TTL - Duration::from_secs(1),
+            },
+        );
+
+        prune_usb_cache(&mut cache);
+
+        assert!(cache.is_empty());
+    }
 }

@@ -83,9 +83,15 @@ impl EventHandler for SoundHandler {
 }
 
 fn schedule_debounced_sound(sound_id: String, theme: String, custom_dir: Option<PathBuf>, is_path: bool) {
-    if let Some(handle) = AUDIO_VOLUME_DEBOUNCE.lock().take() {
+    let mut guard = AUDIO_VOLUME_DEBOUNCE.lock();
+    if guard.as_ref().is_some_and(|handle| handle.is_finished()) {
+        *guard = None;
+    }
+
+    if let Some(handle) = guard.take() {
         handle.abort();
     }
+    drop(guard);
 
     let handle = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(250)).await;
