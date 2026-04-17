@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Linux system event sound and notification daemon"
 license = "MIT"
-repository = "https://github.com/asifb/sysaud"
+repository = "https://github.com/anisthdev/sysaud"
 authors = ["asif"]
-homepage = "https://github.com/asifb/sysaud"
+homepage = "https://github.com/anisthdev/sysaud"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

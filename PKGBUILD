@@ -4,16 +4,17 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc="Linux system event sound and notification daemon (Rust)"
 arch=('x86_64')
-url="https://github.com/asifb/sysaud"
+url="https://github.com/anisthdev/sysaud"
 license=('MIT')
 depends=(
     'dbus'
     'udev'
 )
 optdepends=(
-    'pipewire-pulse: audio playback'
-    'pulseaudio: audio playback (alternative to pipewire)'
-    'alsa-utils: audio playback (fallback)'
+    'pipewire-pulse: audio playback via pw-play'
+    'pulseaudio: audio playback via paplay'
+    'alsa-utils: audio playback via aplay (fallback)'
+    'libpulse: volume control and playback'
 )
 makedepends=('cargo')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
