@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use parking_lot::RwLock;
 
 pub use debounce::DebounceConfig;
 
@@ -155,25 +155,41 @@ pub fn load(path: Option<PathBuf>) -> anyhow::Result<Config> {
 
 #[derive(Clone)]
 pub struct SharedConfig {
-    config: Arc<std::sync::RwLock<Config>>,
-    reload_tx: broadcast::Sender<Arc<Config>>,
+    config: Arc<RwLock<Arc<Config>>>,
 }
 
 impl SharedConfig {
     pub fn new(config: Config) -> Self {
-        let (reload_tx, _) = broadcast::channel(1);
         Self {
-            config: Arc::new(std::sync::RwLock::new(config)),
-            reload_tx,
+            config: Arc::new(RwLock::new(Arc::new(config))),
         }
     }
 
-    pub fn get_config(&self) -> Arc<Config> {
-        Arc::new(self.config.read().unwrap().clone())
+    pub fn snapshot(&self) -> Arc<Config> {
+        self.config.read().clone()
     }
 
     pub fn reload(&self, new_config: Config) {
-        let new_shared = Arc::new(new_config);
-        let _ = self.reload_tx.send(new_shared.clone());
+        *self.config.write() = Arc::new(new_config);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_config_reload_updates_snapshot() {
+        let shared = SharedConfig::new(Config::default());
+        assert!(shared.snapshot().sound.enabled);
+
+        let mut updated = Config::default();
+        updated.sound.enabled = false;
+        updated.notify.enabled = false;
+        shared.reload(updated);
+
+        let snapshot = shared.snapshot();
+        assert!(!snapshot.sound.enabled);
+        assert!(!snapshot.notify.enabled);
     }
 }

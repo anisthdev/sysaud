@@ -73,7 +73,7 @@ async fn run_daemon(args: Args) -> anyhow::Result<()> {
 
     let _pid_lock = pidlock::PidLock::acquire()?;
 
-    let initial_config = args.load_config()?;
+    let shared_config = config::SharedConfig::new(args.load_config()?);
     let sound_enabled = !args.no_sound;
     let notify_enabled = !args.no_notify;
 
@@ -85,10 +85,8 @@ async fn run_daemon(args: Args) -> anyhow::Result<()> {
     let sounds_config = config::sounds::SoundsConfig::default();
     let notifications_config = config::notifications::NotificationsConfig::default();
 
-    let shared_config = config::SharedConfig::new(initial_config);
-
-    let (handlers, dispatcher) = actions::ActionDispatcher::new(actions::DispatcherConfig {
-        config: shared_config.get_config(),
+    let handlers = actions::build_handlers(actions::DispatcherConfig {
+        config: shared_config.clone(),
         sounds_defaults: sounds_config,
         notifications_defaults: notifications_config,
         sound_enabled,
@@ -96,14 +94,13 @@ async fn run_daemon(args: Args) -> anyhow::Result<()> {
         session_bus: session_bus.clone(),
     });
 
-    let _ = dispatcher;
     let router = Arc::new(event::router::EventRouter::new(
         handlers,
-        shared_config.get_config().debounce.clone(),
+        shared_config.snapshot().debounce.clone(),
     ));
 
     let registry = detectors::DetectorRegistry::new(event_tx);
-    registry.attach_all(session_bus.clone(), system_bus.clone(), shared_config.get_config()).await?;
+    registry.attach_all(session_bus.clone(), system_bus.clone(), shared_config.clone()).await?;
 
     let event_loop_handle = tokio::spawn(async move {
         tracing::debug!("DEBUG: Event loop starting");

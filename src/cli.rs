@@ -60,3 +60,22 @@ pub fn list_events() -> Vec<&'static str> {
         "disk.unmounted",
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn parses_json_before_subcommand() {
+        let args = Args::try_parse_from(["sysaud", "--json", "list-events"]).unwrap();
+        assert!(args.json);
+        assert!(matches!(args.command, Some(Command::ListEvents)));
+    }
+
+    #[test]
+    fn rejects_json_after_subcommand() {
+        let result = Args::try_parse_from(["sysaud", "list-events", "--json"]);
+        assert!(result.is_err());
+    }
+}

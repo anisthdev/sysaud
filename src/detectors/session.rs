@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use futures_util::StreamExt;
@@ -8,11 +7,12 @@ use zbus::MessageStream;
 use crate::event::Event;
 use crate::detectors::context::DetectorContext;
 use crate::detectors::detector::Detector;
+use crate::detectors::state::{StateCell, StateTransition};
 
 #[derive(Clone)]
 pub struct SessionDetector {
     event_tx: mpsc::Sender<Event>,
-    locked: Arc<Mutex<Option<bool>>>,
+    locked: StateCell<bool>,
 }
 
 impl Detector for SessionDetector {
@@ -21,7 +21,7 @@ impl Detector for SessionDetector {
     }
 
     fn new(event_tx: mpsc::Sender<Event>) -> Self {
-        Self { event_tx, locked: Arc::new(Mutex::new(None)) }
+        Self { event_tx, locked: StateCell::new() }
     }
 
     async fn start(self: Arc<Self>, ctx: DetectorContext, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
@@ -42,23 +42,22 @@ impl Detector for SessionDetector {
                         }
                     }
                 }
-                let lock_app = config.daemon.lock_app.clone();
+                let lock_app = config.snapshot().daemon.lock_app.clone();
                 let is_running = Self::is_process_running(&lock_app);
-                let mut locked = self_for_poll.locked.lock().await;
-                if let Some(currently_locked) = *locked {
-                    if currently_locked && !is_running {
-                        tracing::info!("Session detector: {} exited, emitting screen-unlocked", lock_app);
-                        *locked = Some(false);
-                        let event = Event::new("session", "screen-unlocked", HashMap::new());
-                        let _ = self_for_poll.event_tx.send(event).await;
-                    } else if !currently_locked && is_running {
-                        tracing::info!("Session detector: {} started, emitting screen-locked", lock_app);
-                        *locked = Some(true);
-                        let event = Event::new("session", "screen-locked", HashMap::new());
-                        let _ = self_for_poll.event_tx.send(event).await;
+
+                match self_for_poll.locked.update(is_running).await {
+                    StateTransition::Initialized | StateTransition::Unchanged => {}
+                    StateTransition::Changed { previous } => {
+                        if previous && !is_running {
+                            tracing::info!("Session detector: {} exited, emitting screen-unlocked", lock_app);
+                            let event = Event::new("session", "screen-unlocked", HashMap::new());
+                            let _ = self_for_poll.event_tx.send(event).await;
+                        } else if !previous && is_running {
+                            tracing::info!("Session detector: {} started, emitting screen-locked", lock_app);
+                            let event = Event::new("session", "screen-locked", HashMap::new());
+                            let _ = self_for_poll.event_tx.send(event).await;
+                        }
                     }
-                } else {
-                    *locked = Some(is_running);
                 }
             }
         });
@@ -87,13 +86,14 @@ impl Detector for SessionDetector {
                         }
 
                         if let Ok(is_locked) = msg.body().deserialize::<bool>() {
-                            let mut locked = self_for_ss.locked.lock().await;
-                            if *locked != Some(is_locked) {
-                                tracing::info!("Session detector: ScreenSaver ActiveChanged to {}, emitting event", is_locked);
-                                *locked = Some(is_locked);
-                                let name = if is_locked { "screen-locked" } else { "screen-unlocked" };
-                                let event = Event::new("session", name, HashMap::new());
-                                let _ = self_for_ss.event_tx.send(event).await;
+                            match self_for_ss.locked.update(is_locked).await {
+                                StateTransition::Initialized | StateTransition::Unchanged => {}
+                                StateTransition::Changed { .. } => {
+                                    tracing::info!("Session detector: ScreenSaver ActiveChanged to {}, emitting event", is_locked);
+                                    let name = if is_locked { "screen-locked" } else { "screen-unlocked" };
+                                    let event = Event::new("session", name, HashMap::new());
+                                    let _ = self_for_ss.event_tx.send(event).await;
+                                }
                             }
                         }
                     }
@@ -141,13 +141,14 @@ impl Detector for SessionDetector {
                             };
 
                             if let Some(is_locked) = is_locked {
-                                let mut locked = self.locked.lock().await;
-                                if *locked != Some(is_locked) {
-                                    let name = if is_locked { "screen-locked" } else { "screen-unlocked" };
-                                    tracing::info!("Session detector: received logind signal {}, emitting event", name);
-                                    *locked = Some(is_locked);
-                                    let event = Event::new("session", name, HashMap::new());
-                                    let _ = self.event_tx.send(event).await;
+                                match self.locked.update(is_locked).await {
+                                    StateTransition::Initialized | StateTransition::Unchanged => {}
+                                    StateTransition::Changed { .. } => {
+                                        let name = if is_locked { "screen-locked" } else { "screen-unlocked" };
+                                        tracing::info!("Session detector: received logind signal {}, emitting event", name);
+                                        let event = Event::new("session", name, HashMap::new());
+                                        let _ = self.event_tx.send(event).await;
+                                    }
                                 }
                             }
                         }
@@ -158,13 +159,14 @@ impl Detector for SessionDetector {
                             if interface == "org.freedesktop.login1.Session" {
                                 if let Some(value) = changed.get("LockedHint") {
                                     if let Ok(is_locked) = value.downcast_ref::<bool>() {
-                                        let mut locked = self.locked.lock().await;
-                                        if *locked != Some(is_locked) {
-                                            tracing::info!("Session detector: logind LockedHint changed to {}, emitting event", is_locked);
-                                            *locked = Some(is_locked);
-                                            let name = if is_locked { "screen-locked" } else { "screen-unlocked" };
-                                            let event = Event::new("session", name, HashMap::new());
-                                            let _ = self.event_tx.send(event).await;
+                                        match self.locked.update(is_locked).await {
+                                            StateTransition::Initialized | StateTransition::Unchanged => {}
+                                            StateTransition::Changed { .. } => {
+                                                tracing::info!("Session detector: logind LockedHint changed to {}, emitting event", is_locked);
+                                                let name = if is_locked { "screen-locked" } else { "screen-unlocked" };
+                                                let event = Event::new("session", name, HashMap::new());
+                                                let _ = self.event_tx.send(event).await;
+                                            }
                                         }
                                     }
                                 }

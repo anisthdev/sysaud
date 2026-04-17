@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use futures_util::StreamExt;
 use crate::event::Event;
 use crate::detectors::context::DetectorContext;
 use crate::detectors::detector::Detector;
+use crate::detectors::state::{StateCell, StateTransition};
 
 const UPOWER_BUS: &str = "org.freedesktop.UPower";
 const UPOWER_PATH: &str = "/org/freedesktop/UPower";
@@ -21,7 +21,7 @@ const WARNING_ACTION: u32 = 5;
 #[derive(Clone)]
 pub struct PowerDetector {
     event_tx: mpsc::Sender<Event>,
-    on_battery: Arc<Mutex<Option<bool>>>,
+    on_battery: StateCell<bool>,
 }
 
 impl Detector for PowerDetector {
@@ -30,7 +30,7 @@ impl Detector for PowerDetector {
     }
 
     fn new(event_tx: mpsc::Sender<Event>) -> Self {
-        Self { event_tx, on_battery: Arc::new(Mutex::new(None)) }
+        Self { event_tx, on_battery: StateCell::new() }
     }
 
     async fn start(self: Arc<Self>, ctx: DetectorContext, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
@@ -78,16 +78,17 @@ impl Detector for PowerDetector {
 
                     if let Some(value) = changed.get("OnBattery") {
                         if let Ok(is_on_battery) = value.downcast_ref::<bool>() {
-                            let mut on_battery = self.on_battery.lock().await;
-                            if *on_battery != Some(is_on_battery) {
-                                *on_battery = Some(is_on_battery);
-                                let name = if is_on_battery {
-                                    "ac-unplugged"
-                                } else {
-                                    "ac-plugged"
-                                };
-                                let event = Event::new("power", name, HashMap::new());
-                                let _ = self.event_tx.send(event).await;
+                            match self.on_battery.update(is_on_battery).await {
+                                StateTransition::Unchanged => {}
+                                StateTransition::Initialized | StateTransition::Changed { .. } => {
+                                    let name = if is_on_battery {
+                                        "ac-unplugged"
+                                    } else {
+                                        "ac-plugged"
+                                    };
+                                    let event = Event::new("power", name, HashMap::new());
+                                    let _ = self.event_tx.send(event).await;
+                                }
                             }
                         }
                     }
@@ -105,8 +106,8 @@ impl Detector for PowerDetector {
 #[derive(Clone)]
 pub struct BatteryDetector {
     event_tx: mpsc::Sender<Event>,
-    last_warning: Arc<Mutex<Option<u32>>>,
-    last_pct_bucket: Arc<Mutex<Option<i32>>>,
+    last_warning: StateCell<u32>,
+    last_pct_bucket: StateCell<i32>,
 }
 
 impl Detector for BatteryDetector {
@@ -117,8 +118,8 @@ impl Detector for BatteryDetector {
     fn new(event_tx: mpsc::Sender<Event>) -> Self {
         Self {
             event_tx,
-            last_warning: Arc::new(Mutex::new(None)),
-            last_pct_bucket: Arc::new(Mutex::new(None)),
+            last_warning: StateCell::new(),
+            last_pct_bucket: StateCell::new(),
         }
     }
 
@@ -167,25 +168,26 @@ impl Detector for BatteryDetector {
 
                     if let Some(value) = changed.get("WarningLevel") {
                         if let Ok(level) = value.downcast_ref::<u32>() {
-                            let mut last_warning = self.last_warning.lock().await;
-                            if *last_warning != Some(level) && level >= WARNING_LOW {
-                                *last_warning = Some(level);
-                                drop(last_warning);
+                            match self.last_warning.update(level).await {
+                                StateTransition::Unchanged => {}
+                                StateTransition::Initialized | StateTransition::Changed { .. } => {
+                                    if level >= WARNING_LOW {
+                                        let name = match level {
+                                            WARNING_LOW => "battery-low",
+                                            WARNING_CRITICAL => "battery-critical",
+                                            WARNING_ACTION => "battery-action",
+                                            _ => continue,
+                                        };
 
-                                let name = match level {
-                                    WARNING_LOW => "battery-low",
-                                    WARNING_CRITICAL => "battery-critical",
-                                    WARNING_ACTION => "battery-action",
-                                    _ => continue,
-                                };
+                                        let mut details = HashMap::new();
+                                        if let Ok(pct) = self.get_property::<f64>(&ctx.system_bus, UPOWER_BUS, DISPLAY_DEVICE_PATH, UPOWER_DEVICE_IFACE, "Percentage").await {
+                                            details.insert("percentage".to_string(), pct.to_string());
+                                        }
 
-                                let mut details = HashMap::new();
-                                if let Ok(pct) = self.get_property::<f64>(&ctx.system_bus, UPOWER_BUS, DISPLAY_DEVICE_PATH, UPOWER_DEVICE_IFACE, "Percentage").await {
-                                    details.insert("percentage".to_string(), pct.to_string());
+                                        let event = Event::new("power", name, details);
+                                        let _ = self.event_tx.send(event).await;
+                                    }
                                 }
-
-                                let event = Event::new("power", name, details);
-                                let _ = self.event_tx.send(event).await;
                             }
                         }
                     }
@@ -193,15 +195,11 @@ impl Detector for BatteryDetector {
                     if let Some(value) = changed.get("Percentage") {
                         if let Ok(pct) = value.downcast_ref::<f64>() {
                             let bucket = (pct as i32) / 10;
-                            let mut last_bucket = self.last_pct_bucket.lock().await;
-                            if *last_bucket != Some(bucket) {
-                                let old_bucket = *last_bucket;
-                                *last_bucket = Some(bucket);
-
-                                if old_bucket.is_some() {
-                                    drop(last_bucket);
-
-                                    let direction = if bucket > old_bucket.unwrap() {
+                            match self.last_pct_bucket.update(bucket).await {
+                                StateTransition::Initialized => {}
+                                StateTransition::Unchanged => {}
+                                StateTransition::Changed { previous } => {
+                                    let direction = if bucket > previous {
                                         "charging"
                                     } else {
                                         "discharging"

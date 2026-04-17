@@ -7,6 +7,7 @@ use futures_util::StreamExt;
 use crate::event::Event;
 use crate::detectors::context::DetectorContext;
 use crate::detectors::detector::Detector;
+use crate::detectors::state::{StateCell, StateTransition};
 
 const NM_BUS: &str = "org.freedesktop.NetworkManager";
 const NM_PATH: &str = "/org/freedesktop/NetworkManager";
@@ -24,7 +25,7 @@ const VPN_STATE_DISCONNECTED: u32 = 7;
 #[derive(Clone)]
 pub struct NetworkDetector {
     event_tx: mpsc::Sender<Event>,
-    state: Arc<Mutex<Option<String>>>,
+    state: StateCell<String>,
 }
 
 impl Detector for NetworkDetector {
@@ -33,7 +34,7 @@ impl Detector for NetworkDetector {
     }
 
     fn new(event_tx: mpsc::Sender<Event>) -> Self {
-        Self { event_tx, state: Arc::new(Mutex::new(None)) }
+        Self { event_tx, state: StateCell::new() }
     }
 
     async fn start(self: Arc<Self>, ctx: DetectorContext, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
@@ -81,11 +82,11 @@ impl Detector for NetworkDetector {
                         }
                     };
 
-                    let mut current_state = self.state.lock().await;
-
-                    if nm_state == NM_STATE_CONNECTED_GLOBAL && current_state.as_deref() != Some("connected") {
-                        *current_state = Some("connected".to_string());
-                        drop(current_state);
+                    if nm_state == NM_STATE_CONNECTED_GLOBAL {
+                        match self.state.update("connected".to_string()).await {
+                            StateTransition::Unchanged => continue,
+                            StateTransition::Initialized | StateTransition::Changed { .. } => {}
+                        }
 
                         let mut details = HashMap::new();
 
@@ -115,8 +116,11 @@ impl Detector for NetworkDetector {
                         tracing::info!("Network detector: Emitting event network.{}", event_name);
                         let event = Event::new("network", event_name, details);
                         let _ = self.event_tx.send(event).await;
-                    } else if nm_state <= NM_STATE_DISCONNECTED && current_state.as_deref() != Some("disconnected") {
-                        *current_state = Some("disconnected".to_string());
+                    } else if nm_state <= NM_STATE_DISCONNECTED {
+                        match self.state.update("disconnected".to_string()).await {
+                            StateTransition::Unchanged => continue,
+                            StateTransition::Initialized | StateTransition::Changed { .. } => {}
+                        }
                         tracing::info!("Network detector: Network disconnected");
                         let event = Event::new("network", "network-disconnected", HashMap::new());
                         let _ = self.event_tx.send(event).await;

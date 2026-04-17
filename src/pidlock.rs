@@ -1,12 +1,11 @@
 use std::fs;
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::process::id;
 
 pub struct PidLock {
     lock_path: PathBuf,
-    #[allow(dead_code)]
-    fd: Option<RawFd>,
+    _fd: Option<OwnedFd>,
 }
 
 impl PidLock {
@@ -24,7 +23,7 @@ impl PidLock {
                     tracing::info!("Acquired PID lock with pidfd (pid: {})", id());
                     return Ok(PidLock {
                         lock_path,
-                        fd: Some(fd),
+                        _fd: Some(fd),
                     });
                 }
                 Err(e) => tracing::debug!("pidfd_open not available: {}", e),
@@ -35,7 +34,7 @@ impl PidLock {
     }
 
     #[cfg(target_os = "linux")]
-    fn acquire_pidfd() -> anyhow::Result<RawFd> {
+    fn acquire_pidfd() -> anyhow::Result<OwnedFd> {
         const SYS_PIDFD_OPEN: u64 = 434;
         const PIDFD_CLOEXEC: u32 = 0o2000000;
 
@@ -49,7 +48,8 @@ impl PidLock {
             ));
         }
 
-        Ok(ret as RawFd)
+        let raw_fd = ret as std::os::fd::RawFd;
+        Ok(unsafe { OwnedFd::from_raw_fd(raw_fd) })
     }
 
     fn acquire_fallback(lock_path: &PathBuf) -> anyhow::Result<PidLock> {
@@ -64,7 +64,7 @@ impl PidLock {
             );
             return Ok(PidLock {
                 lock_path: lock_path.clone(),
-                fd: Some(file.as_raw_fd()),
+                _fd: None,
             });
         }
 
@@ -85,7 +85,7 @@ impl PidLock {
             tracing::info!("Acquired PID lock at {} (fallback)", lock_path.display());
             return Ok(PidLock {
                 lock_path: lock_path.clone(),
-                fd: None,
+                _fd: None,
             });
         }
 
@@ -132,13 +132,6 @@ impl PidLock {
 
 impl Drop for PidLock {
     fn drop(&mut self) {
-        if let Some(fd) = self.fd {
-            #[cfg(target_os = "linux")]
-            {
-                unsafe { libc::close(fd) };
-            }
-        }
-
         self.cleanup_lock_file();
     }
 }

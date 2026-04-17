@@ -2,28 +2,28 @@ use crate::event::handler::EventHandler;
 use crate::event::Event;
 use std::collections::HashMap;
 use std::process::Command;
-use std::sync::Arc;
 
 pub struct ScriptHandler {
-    config: Arc<crate::config::Config>,
+    config: crate::config::SharedConfig,
 }
 
 impl ScriptHandler {
-    pub fn new(config: Arc<crate::config::Config>) -> Self {
+    pub fn new(config: crate::config::SharedConfig) -> Self {
         Self { config }
     }
 }
 
 impl EventHandler for ScriptHandler {
     fn handle(&self, event: &Event) -> anyhow::Result<()> {
+        let config = self.config.snapshot();
         let event_id_str = event.id.as_str();
 
-        if let Some(ov) = self.config.events.get(&event_id_str) {
+        if let Some(ov) = config.events.get(&event_id_str) {
             if !ov.enabled {
                 return Ok(());
             }
             if let Some(script) = &ov.script {
-                run_script(script, event, &self.config.daemon.lock_app);
+                run_script(script, event, &config.daemon.lock_app);
             }
         }
         Ok(())

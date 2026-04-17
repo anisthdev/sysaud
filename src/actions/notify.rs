@@ -1,4 +1,5 @@
 use crate::config::notifications::NotificationsConfig;
+use crate::config::SharedConfig;
 use crate::event::Event;
 use crate::event::handler::EventHandler;
 use std::collections::HashMap;
@@ -42,7 +43,7 @@ static CURRENT_ICON_THEME: Lazy<Option<String>> = Lazy::new(|| {
 });
 
 pub struct NotifyHandler {
-    config: Arc<crate::config::Config>,
+    config: SharedConfig,
     notifications_config: NotificationsConfig,
     enabled: bool,
     session_bus: Arc<Connection>,
@@ -50,7 +51,7 @@ pub struct NotifyHandler {
 
 impl NotifyHandler {
     pub fn new(
-        config: Arc<crate::config::Config>,
+        config: SharedConfig,
         notifications_config: NotificationsConfig,
         enabled: bool,
         session_bus: Connection,
@@ -70,7 +71,13 @@ impl EventHandler for NotifyHandler {
             return Ok(());
         }
 
-        let override_config = self.config.events.get(&event.id.as_str());
+        let config = self.config.snapshot();
+
+        if !config.notify.enabled {
+            return Ok(());
+        }
+
+        let override_config = config.events.get(&event.id.as_str());
 
         if let Some(ov) = override_config {
             if !ov.enabled {
@@ -93,7 +100,7 @@ impl EventHandler for NotifyHandler {
                 &spec.summary,
                 &spec.body,
                 &icon,
-                self.config.notify.timeout_ms,
+                config.notify.timeout_ms,
                 event,
                 self.session_bus.clone(),
             );
@@ -131,9 +138,9 @@ fn resolve_icon_path(icon_name: &str) -> String {
         return icon_name.to_string();
     }
 
-    if icon_name.starts_with('~') {
+    if let Some(stripped) = icon_name.strip_prefix("~/") {
         if let Ok(home) = std::env::var("HOME") {
-            let resolved = PathBuf::from(home).join(&icon_name[2..]);
+            let resolved = PathBuf::from(home).join(stripped);
             if resolved.exists() {
                 return resolved.to_string_lossy().to_string();
             }

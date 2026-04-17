@@ -2,20 +2,19 @@ use crate::config::sounds::SoundsConfig;
 use crate::event::handler::EventHandler;
 use crate::event::Event;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::process::Command;
 
-static AUDIO_EXTENSIONS: &[&str] = &["oga", ".ogg", ".wav", ".flac", ".mp3"];
+static AUDIO_EXTENSIONS: &[&str] = &[".oga", ".ogg", ".wav", ".flac", ".mp3"];
 
 pub struct SoundHandler {
-    config: Arc<crate::config::Config>,
+    config: crate::config::SharedConfig,
     sounds_config: SoundsConfig,
     enabled: bool,
 }
 
 impl SoundHandler {
     pub fn new(
-        config: Arc<crate::config::Config>,
+        config: crate::config::SharedConfig,
         sounds_config: SoundsConfig,
         enabled: bool,
     ) -> Self {
@@ -33,7 +32,13 @@ impl EventHandler for SoundHandler {
             return Ok(());
         }
 
-        let override_config = self.config.events.get(&event.id.as_str());
+        let config = self.config.snapshot();
+
+        if !config.sound.enabled {
+            return Ok(());
+        }
+
+        let override_config = config.events.get(&event.id.as_str());
 
         if let Some(ov) = override_config {
             if !ov.enabled {
@@ -59,8 +64,8 @@ impl EventHandler for SoundHandler {
         } else {
             play_theme_sound(
                 sound_id,
-                &self.config.sound.theme,
-                &self.config.sound.custom_dir,
+                &config.sound.theme,
+                &config.sound.custom_dir,
             );
         }
         Ok(())

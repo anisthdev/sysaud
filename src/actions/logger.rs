@@ -1,32 +1,32 @@
 use crate::event::handler::EventHandler;
 use crate::event::Event;
-use chrono::Local;
+use chrono::Utc;
 use std::io::Write;
-use std::sync::Arc;
 
 pub struct LoggerHandler {
-    config: Arc<crate::config::Config>,
+    config: crate::config::SharedConfig,
 }
 
 impl LoggerHandler {
-    pub fn new(config: Arc<crate::config::Config>) -> Self {
+    pub fn new(config: crate::config::SharedConfig) -> Self {
         Self { config }
     }
 }
 
 impl EventHandler for LoggerHandler {
     fn handle(&self, event: &Event) -> anyhow::Result<()> {
-        let log_file = match &self.config.daemon.log_file {
+        let config = self.config.snapshot();
+        let log_file = match &config.daemon.log_file {
             Some(path) => path,
             None => return Ok(()),
         };
 
         let log_entry = serde_json::json!({
-            "timestamp": Local::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+            "timestamp": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             "event": event.id.as_str(),
-            "category": event.id.category,
-            "name": event.id.name,
-            "detail": event.detail,
+            "category": event.id.category.clone(),
+            "name": event.id.name.clone(),
+            "detail": event.detail.clone(),
         });
 
         let json = match serde_json::to_string(&log_entry) {

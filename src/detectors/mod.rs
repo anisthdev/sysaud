@@ -12,6 +12,7 @@ mod disk;
 mod display;
 mod network;
 mod power;
+mod state;
 mod session;
 mod usb;
 
@@ -40,7 +41,7 @@ impl DetectorRegistry {
         &self,
         session_bus: zbus::Connection,
         system_bus: zbus::Connection,
-        config: Arc<crate::config::Config>,
+        config: crate::config::SharedConfig,
     ) -> anyhow::Result<()> {
         let ctx = DetectorContext {
             event_tx: self.event_tx.clone(),
