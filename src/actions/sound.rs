@@ -95,12 +95,11 @@ fn play_file(path: PathBuf) {
     };
 
     if player == "pw-play" {
-        let volume = get_system_volume().unwrap_or(1.0);
         let path_str = path.to_str().unwrap_or("").to_string();
 
         tokio::spawn(async move {
             if let Ok(mut child) = Command::new(player)
-                .args(["--volume", &format!("{:.2}", volume), &path_str])
+                .arg(&path_str)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()
@@ -121,27 +120,6 @@ fn play_file(path: PathBuf) {
                 let _ = child.wait().await;
             }
         });
-    }
-}
-
-fn get_system_volume() -> Option<f32> {
-    if which::which("wpctl").is_ok() {
-        let output = std::process::Command::new("wpctl")
-            .args(["get-volume", "@DEFAULT_AUDIO_SINK@"])
-            .output()
-            .ok()?;
-
-        let volume_str = String::from_utf8_lossy(&output.stdout);
-        let volume: f32 = volume_str
-            .trim()
-            .trim_start_matches("Volume:")
-            .trim()
-            .parse()
-            .ok()?;
-
-        Some(volume)
-    } else {
-        None
     }
 }
 
