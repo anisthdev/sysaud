@@ -19,8 +19,8 @@
 "bluetooth.adapter-off" = { summary = "Bluetooth Off", body = "", icon = "bluetooth-disabled" }
 "audio.mute-changed" = { summary = "Audio {muted_str}", body = "{device}", icon = "{muted_icon}" }
 "audio.volume-changed" = { summary = "Volume {volume}%", body = "", icon = "{volume_icon}" }
-"audio.default-sink-changed" = { summary = "Audio Output Changed", body = "{device}", icon = "audio-speakers" }
-"audio.default-source-changed" = { summary = "Audio Input Changed", body = "{device}", icon = "audio-input-microphone" }
+"audio.default-sink-changed" = { summary = "{device}", body = "Audio Output Changed", icon = "audio-speakers" }
+"audio.default-source-changed" = { summary = "{device}", body = "Audio Input Changed", icon = "audio-input-microphone" }
 "usb.device-plugged" = { summary = "USB Connected", body = "{vendor} {model}", icon = "{type_icon}" }
 "usb.device-unplugged" = { summary = "USB Disconnected", body = "{vendor} {model}", icon = "{type_icon}" }
 "disk.mounted" = { summary = "Disk Mounted", body = "{label} at {mount_point}", icon = "drive-harddisk" }

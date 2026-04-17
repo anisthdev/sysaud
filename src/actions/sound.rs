@@ -1,10 +1,15 @@
 use crate::config::sounds::SoundsConfig;
 use crate::event::handler::EventHandler;
 use crate::event::Event;
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use std::path::PathBuf;
+use std::time::Duration;
+use tokio::task::JoinHandle;
 use tokio::process::Command;
 
 static AUDIO_EXTENSIONS: &[&str] = &[".oga", ".ogg", ".wav", ".flac", ".mp3"];
+static AUDIO_VOLUME_DEBOUNCE: Lazy<Mutex<Option<JoinHandle<()>>>> = Lazy::new(|| Mutex::new(None));
 
 pub struct SoundHandler {
     config: crate::config::SharedConfig,
@@ -59,6 +64,11 @@ impl EventHandler for SoundHandler {
         }
 
         let is_path = sound_id.contains('/') || sound_id.starts_with('~');
+        if event.id.as_str() == "audio.volume-changed" {
+            schedule_debounced_sound(sound_id.to_string(), config.sound.theme.clone(), config.sound.custom_dir.clone(), is_path);
+            return Ok(());
+        }
+
         if is_path {
             play_file(PathBuf::from(sound_id));
         } else {
@@ -70,6 +80,23 @@ impl EventHandler for SoundHandler {
         }
         Ok(())
     }
+}
+
+fn schedule_debounced_sound(sound_id: String, theme: String, custom_dir: Option<PathBuf>, is_path: bool) {
+    if let Some(handle) = AUDIO_VOLUME_DEBOUNCE.lock().take() {
+        handle.abort();
+    }
+
+    let handle = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        if is_path {
+            play_file(PathBuf::from(sound_id));
+        } else {
+            play_theme_sound(&sound_id, &theme, &custom_dir);
+        }
+    });
+
+    *AUDIO_VOLUME_DEBOUNCE.lock() = Some(handle);
 }
 
 fn play_file(path: PathBuf) {

@@ -17,6 +17,8 @@ const EVENT_APP_NAMES: &[(&str, &str)] = &[
     ("display.brightness-changed", "sysaud-brightness-notification"),
     ("audio.volume-changed", "volume-notification"),
     ("audio.mute-changed", "volume-notification"),
+    ("audio.default-sink-changed", "sysaud-audio"),
+    ("audio.default-source-changed", "sysaud-audio"),
 ];
 
 const USB_TYPE_ICONS: &[(&str, &str)] = &[
