@@ -1,0 +1,24 @@
+# Default notification specs for system events
+# Event ID -> { summary = "", body = "", icon = "" }
+
+[defaults]
+"power.ac-plugged" = { summary = "Charger Connected", body = "", icon = "battery-full-charging" }
+"power.ac-unplugged" = { summary = "Charger Disconnected", body = "Running on battery", icon = "battery-discharging" }
+"power.battery-low" = { summary = "Battery Low", body = "{percentage:.0f}% remaining", icon = "battery-low" }
+"power.battery-critical" = { summary = "Battery Critical", body = "{percentage:.0f}% — plug in now", icon = "battery-caution" }
+"power.battery-action" = { summary = "Battery Empty", body = "System will hibernate soon", icon = "battery-empty" }
+"power.battery-level" = { summary = "Battery {percentage:.0f}%", body = "{direction}", icon = "battery-good" }
+"network.wifi-connected" = { summary = "WiFi Connected", body = "{name}", icon = "network-wireless" }
+"network.network-connected" = { summary = "Network Connected", body = "{name}", icon = "network-wired" }
+"network.network-disconnected" = { summary = "Network Lost", body = "", icon = "network-offline" }
+"network.vpn-connected" = { summary = "VPN Connected", body = "{name}", icon = "network-vpn" }
+"network.vpn-disconnected" = { summary = "VPN Disconnected", body = "{name}", icon = "network-offline" }
+"bluetooth.device-connected" = { summary = "Bluetooth Connected", body = "{device}", icon = "bluetooth-active" }
+"bluetooth.device-disconnected" = { summary = "Bluetooth Disconnected", body = "{device}", icon = "bluetooth-disconnected" }
+"bluetooth.adapter-on" = { summary = "Bluetooth On", body = "", icon = "bluetooth-active" }
+"bluetooth.adapter-off" = { summary = "Bluetooth Off", body = "", icon = "bluetooth-disabled" }
+"usb.device-plugged" = { summary = "USB Connected", body = "{vendor} {model}", icon = "{type_icon}" }
+"usb.device-unplugged" = { summary = "USB Disconnected", body = "{vendor} {model}", icon = "{type_icon}" }
+"disk.mounted" = { summary = "Disk Mounted", body = "{label} at {mount_point}", icon = "drive-harddisk" }
+"disk.unmounted" = { summary = "Disk Unmounted", body = "{label}", icon = "drive-harddisk" }
+"display.brightness-changed" = { summary = "Brightness {level}%", body = "", icon = "display-brightness" }

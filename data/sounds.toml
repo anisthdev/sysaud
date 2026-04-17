@@ -1,0 +1,27 @@
+# Default sound mappings for system events
+# Event ID -> Sound name (from freedesktop sound theme)
+
+[defaults]
+"power.ac-plugged" = "power-plug"
+"power.ac-unplugged" = "power-unplug"
+"power.battery-low" = "dialog-warning"
+"power.battery-critical" = "dialog-error"
+"power.battery-action" = "suspend-error"
+"network.wifi-connected" = "network-connectivity-established"
+"network.network-connected" = "network-connectivity-established"
+"network.network-disconnected" = "network-connectivity-lost"
+"network.vpn-connected" = "service-login"
+"network.vpn-disconnected" = "service-logout"
+"bluetooth.device-connected" = "device-added"
+"bluetooth.device-disconnected" = "device-removed"
+"bluetooth.adapter-on" = "service-login"
+"bluetooth.adapter-off" = "service-logout"
+"usb.device-plugged" = "device-added"
+"usb.device-unplugged" = "device-removed"
+"session.login" = "desktop-login"
+"session.screen-locked" = "service-logout"
+"session.screen-unlocked" = "service-login"
+"session.suspend" = "service-logout"
+"session.resume" = "service-login"
+"disk.mounted" = "device-added"
+"disk.unmounted" = "device-removed"

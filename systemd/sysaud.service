@@ -1,0 +1,15 @@
+[Unit]
+Description=sysaud — Linux system event sound & notification daemon
+Documentation=man:sysaud(1)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/sysaud
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
