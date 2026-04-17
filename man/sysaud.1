@@ -10,7 +10,10 @@ sysaud \- Linux system event sound and notification daemon
 .PP
 .B sysaud
 \fBlist-events\fR
-[\fB--json\fR]
+.PP
+.B sysaud
+\fB\-\-json\fR
+\fBlist-events\fR
 .SH DESCRIPTION
 .B sysaud
 is a daemon that listens for system events (via D-Bus, udev, etc.) and fires
@@ -35,7 +38,7 @@ Disable sound playback.
 Disable desktop notifications.
 .TP
 \fB\-\-json\fR
-Output events in JSON format (used with list-events).
+Used with \fBsysaud \-\-json list-events\fR to output events in JSON format.
 .TP
 \fB\-\-config\fR \fIPATH\fR
 Specify a custom configuration file path.
