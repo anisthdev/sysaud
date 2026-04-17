@@ -30,4 +30,6 @@ package() {
     install -Dm644 systemd/sysaud.service \
         "$pkgdir/usr/lib/systemd/user/sysaud.service"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 data/sounds.toml "$pkgdir/usr/share/sysaud/sounds.toml"
+    install -Dm644 data/notifications.toml "$pkgdir/usr/share/sysaud/notifications.toml"
 }

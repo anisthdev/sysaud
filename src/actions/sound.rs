@@ -73,34 +73,69 @@ fn play_file(path: PathBuf) {
         return;
     }
 
-    for player in &["pw-play", "paplay", "aplay"] {
-        if which::which(player).is_ok() {
-            let result = std::process::Command::new(player)
-                .arg(&path)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
+    let player = if which::which("pw-play").is_ok() {
+        Some("pw-play")
+    } else if which::which("paplay").is_ok() {
+        Some("paplay")
+    } else if which::which("aplay").is_ok() {
+        Some("aplay")
+    } else {
+        None
+    };
 
-            match result {
-                Ok(mut child) => {
-                    tracing::debug!("Sound: playing file {} via {}", path.display(), player);
-                    match child.wait() {
-                        Ok(exit) => {
-                            tracing::debug!("Sound: {} exited with {:?}", player, exit.code());
-                        }
-                        Err(e) => {
-                            tracing::warn!("Sound: failed to wait for {}: {}", player, e);
-                        }
-                    }
-                    return;
-                }
-                Err(e) => {
-                    tracing::debug!("Sound: {} failed for {}: {}", player, path.display(), e);
-                }
-            }
+    let Some(player) = player else {
+        tracing::warn!("Sound: no audio player found");
+        return;
+    };
+
+    if player == "pw-play" {
+        let volume = get_system_volume().unwrap_or(1.0);
+
+        let result = std::process::Command::new(player)
+            .args([
+                "--volume",
+                &format!("{:.2}", volume),
+                path.to_str().unwrap_or(""),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+
+        if let Ok(mut child) = result {
+            let _ = child.wait();
+        }
+    } else {
+        let result = std::process::Command::new(player)
+            .arg(&path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+
+        if let Ok(mut child) = result {
+            let _ = child.wait();
         }
     }
-    tracing::warn!("Sound: no audio player found for {}", path.display());
+}
+
+fn get_system_volume() -> Option<f32> {
+    if which::which("wpctl").is_ok() {
+        let output = std::process::Command::new("wpctl")
+            .args(["get-volume", "@DEFAULT_AUDIO_SINK@"])
+            .output()
+            .ok()?;
+
+        let volume_str = String::from_utf8_lossy(&output.stdout);
+        let volume: f32 = volume_str
+            .trim()
+            .trim_start_matches("Volume:")
+            .trim()
+            .parse()
+            .ok()?;
+
+        Some(volume)
+    } else {
+        None
+    }
 }
 
 fn play_theme_sound(sound_id: &str, theme: &str, custom_dir: &Option<PathBuf>) {

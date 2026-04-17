@@ -49,35 +49,16 @@ impl DetectorRegistry {
             system_bus,
         };
 
-        let shutdown_rx = self.shutdown_tx.subscribe();
-        self.spawn_with_supervision::<session::SessionDetector>(ctx.clone(), shutdown_rx);
-
-        let shutdown_rx = self.shutdown_tx.subscribe();
-        self.spawn_with_supervision::<session::SuspendDetector>(ctx.clone(), shutdown_rx);
-
-        let shutdown_rx = self.shutdown_tx.subscribe();
-        self.spawn_with_supervision::<network::NetworkDetector>(ctx.clone(), shutdown_rx);
-
-        let shutdown_rx = self.shutdown_tx.subscribe();
-        self.spawn_with_supervision::<network::VpnDetector>(ctx.clone(), shutdown_rx);
-
-        let shutdown_rx = self.shutdown_tx.subscribe();
-        self.spawn_with_supervision::<power::PowerDetector>(ctx.clone(), shutdown_rx);
-
-        let shutdown_rx = self.shutdown_tx.subscribe();
-        self.spawn_with_supervision::<power::BatteryDetector>(ctx.clone(), shutdown_rx);
-
-        let shutdown_rx = self.shutdown_tx.subscribe();
-        self.spawn_with_supervision::<bluetooth::BluetoothDetector>(ctx.clone(), shutdown_rx);
-
-        let shutdown_rx = self.shutdown_tx.subscribe();
-        self.spawn_with_supervision::<usb::UsbDetector>(ctx.clone(), shutdown_rx);
-
-        let shutdown_rx = self.shutdown_tx.subscribe();
-        self.spawn_with_supervision::<disk::DiskDetector>(ctx.clone(), shutdown_rx);
-
-        let shutdown_rx = self.shutdown_tx.subscribe();
-        self.spawn_with_supervision::<display::DisplayDetector>(ctx.clone(), shutdown_rx);
+        self.spawn_with_supervision::<session::SessionDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
+        self.spawn_with_supervision::<session::SuspendDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
+        self.spawn_with_supervision::<network::NetworkDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
+        self.spawn_with_supervision::<network::VpnDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
+        self.spawn_with_supervision::<power::PowerDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
+        self.spawn_with_supervision::<power::BatteryDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
+        self.spawn_with_supervision::<bluetooth::BluetoothDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
+        self.spawn_with_supervision::<usb::UsbDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
+        self.spawn_with_supervision::<disk::DiskDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
+        self.spawn_with_supervision::<display::DisplayDetector>(ctx.clone(), self.shutdown_tx.subscribe()).await;
 
         tracing::info!("Detector registry started with all detectors");
         Ok(())
@@ -88,14 +69,16 @@ impl DetectorRegistry {
         let _ = self.shutdown_tx.send(true);
         
         let handles: Vec<_> = self.handles.lock().await.drain(..).collect();
-        for handle in handles {
+        tracing::debug!("DEBUG: Registry shutdown - draining {} handles", handles.len());
+        for (i, handle) in handles.into_iter().enumerate() {
+            tracing::debug!("DEBUG: Awaiting detector handle #{}", i);
             let _ = handle.await;
+            tracing::debug!("DEBUG: Detector handle #{} finished", i);
         }
         tracing::info!("All detectors stopped");
     }
 
-    fn spawn_with_supervision<D: Detector + 'static>(&self, ctx: DetectorContext, shutdown: watch::Receiver<bool>) {
-        let handles = self.handles.clone();
+    async fn spawn_with_supervision<D: Detector + 'static>(&self, ctx: DetectorContext, shutdown: watch::Receiver<bool>) {
         let handle = tokio::spawn(async move {
             let mut attempts = 0u32;
             let mut backoff_ms = INITIAL_BACKOFF_MS;
@@ -112,6 +95,7 @@ impl DetectorRegistry {
                 match result {
                     Ok(()) => {
                         tracing::info!("[{}] Detector stopped gracefully", name);
+                        tracing::debug!("DEBUG: [{}] Loop exiting", name);
                         break;
                     }
                     Err(e) => {
@@ -143,9 +127,6 @@ impl DetectorRegistry {
             }
         });
         
-        let handles_clone = handles.clone();
-        tokio::spawn(async move {
-            handles_clone.lock().await.push(handle);
-        });
+        self.handles.lock().await.push(handle);
     }
 }

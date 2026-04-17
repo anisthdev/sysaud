@@ -55,10 +55,12 @@ impl EventRouter {
 
         tracing::info!("Event: {}", event.id);
 
-        for handler in &self.handlers {
+        for (i, handler) in self.handlers.iter().enumerate() {
+            tracing::debug!("DEBUG: Calling handler #{}", i);
             if let Err(e) = handler.handle(event) {
                 tracing::error!("Handler error for {}: {}", event.id, e);
             }
+            tracing::debug!("DEBUG: Handler #{} completed", i);
         }
     }
 }

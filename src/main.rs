@@ -9,7 +9,6 @@ mod pidlock;
 use clap::Parser;
 use cli::{Args, Command};
 use event::Event;
-use event::router::EventRouter;
 use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
@@ -98,48 +97,42 @@ async fn run_daemon(args: Args) -> anyhow::Result<()> {
     });
 
     let _ = dispatcher;
-    let router = Arc::new(EventRouter::new(handlers, shared_config.get_config().debounce.clone()));
+    let router = Arc::new(event::router::EventRouter::new(
+        handlers,
+        shared_config.get_config().debounce.clone(),
+    ));
 
     let registry = detectors::DetectorRegistry::new(event_tx);
-    registry.attach_all(session_bus, system_bus, shared_config.get_config()).await?;
+    registry.attach_all(session_bus.clone(), system_bus.clone(), shared_config.get_config()).await?;
 
-    tokio::spawn(async move {
+    let event_loop_handle = tokio::spawn(async move {
+        tracing::debug!("DEBUG: Event loop starting");
         while let Some(event) = event_rx.recv().await {
+            tracing::debug!("DEBUG: Event loop received: {}", event.id);
             router.handle(&event);
         }
+        tracing::debug!("DEBUG: Event loop receiver terminated (channel closed)");
     });
 
-    setup_signal_handlers(registry.clone(), shared_config.clone(), args.config.clone()).await?;
-
-    tracing::info!("sysaud running...");
-    tokio::signal::ctrl_c().await?;
-    tracing::info!("sysaud shutting down");
-    registry.shutdown().await;
-    Ok(())
-}
-
-async fn setup_signal_handlers(
-    registry: detectors::DetectorRegistry,
-    shared_config: config::SharedConfig,
-    config_path: Option<std::path::PathBuf>,
-) -> anyhow::Result<()> {
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
     let mut sighup = signal(SignalKind::hangup())?;
 
-    tokio::spawn(async move {
+    tracing::info!("sysaud running...");
+
+    loop {
         tokio::select! {
             _ = sigterm.recv() => {
                 tracing::info!("Received SIGTERM");
-                registry.shutdown().await;
+                break;
             }
             _ = sigint.recv() => {
                 tracing::info!("Received SIGINT");
-                registry.shutdown().await;
+                break;
             }
             _ = sighup.recv() => {
                 tracing::info!("Received SIGHUP - reloading config");
-                match config::load(config_path) {
+                match config::load(args.config.clone()) {
                     Ok(new_config) => {
                         shared_config.reload(new_config);
                         tracing::info!("Config reloaded successfully");
@@ -149,8 +142,31 @@ async fn setup_signal_handlers(
                     }
                 }
             }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("Received ctrl-c");
+                break;
+            }
         }
-    });
+    }
 
+    tracing::info!("sysaud shutting down");
+    tracing::debug!("DEBUG: Calling registry.shutdown().await");
+    registry.shutdown().await;
+    tracing::debug!("DEBUG: registry.shutdown().await completed");
+
+    tracing::debug!("DEBUG: Dropping registry");
+    drop(registry);
+    tracing::debug!("DEBUG: registry dropped");
+
+    tracing::debug!("DEBUG: Dropping session_bus and system_bus");
+    drop(session_bus);
+    drop(system_bus);
+    tracing::debug!("DEBUG: Buses dropped");
+
+    tracing::debug!("DEBUG: Awaiting event_loop_handle");
+    let _ = event_loop_handle.await;
+    tracing::debug!("DEBUG: event_loop_handle.await completed");
+
+    tracing::info!("sysaud shutdown complete");
     Ok(())
 }

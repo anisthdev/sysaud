@@ -39,6 +39,8 @@ impl Detector for DisplayDetector {
         }
 
         let (backlight_tx, mut backlight_rx) = mpsc::channel::<()>(10);
+        let backlight_tx_clone = backlight_tx.clone();
+        let mut backlight_tx = Some(backlight_tx);
 
         {
             let has_backlight = self.backlight_device.lock().is_some();
@@ -104,7 +106,7 @@ impl Detector for DisplayDetector {
                                         if event.event_type() != udev::EventType::Change {
                                             continue;
                                         }
-                                        let _ = backlight_tx.try_send(());
+                                        let _ = backlight_tx_clone.try_send(());
                                     }
                                     None => break,
                                 }
@@ -140,6 +142,7 @@ impl Detector for DisplayDetector {
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() {
                         tracing::info!("Display detector: received shutdown signal");
+                        drop(backlight_tx.take());
                         break;
                     }
                 }

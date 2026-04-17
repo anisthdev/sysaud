@@ -29,12 +29,18 @@ impl Detector for SessionDetector {
         let config = ctx.config.clone();
 
         let self_for_poll = self.clone();
+        let mut shutdown_poll = shutdown.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
             loop {
                 tokio::select! {
                     _ = interval.tick() => {}
-                    _ = tokio::signal::ctrl_c() => break,
+                    _ = shutdown_poll.changed() => {
+                        if *shutdown_poll.borrow() {
+                            tracing::debug!("DEBUG: Session poll task exiting");
+                            break;
+                        }
+                    }
                 }
                 let lock_app = config.daemon.lock_app.clone();
                 let is_running = Self::is_process_running(&lock_app);
@@ -59,6 +65,7 @@ impl Detector for SessionDetector {
 
         let self_for_ss = self.clone();
         let session_bus = ctx.session_bus.clone();
+        let mut shutdown_ss = shutdown.clone();
         tokio::spawn(async move {
             let rule = zbus::MatchRule::builder()
                 .interface("org.freedesktop.ScreenSaver")?
@@ -90,7 +97,12 @@ impl Detector for SessionDetector {
                             }
                         }
                     }
-                    _ = tokio::signal::ctrl_c() => break,
+                    _ = shutdown_ss.changed() => {
+                        if *shutdown_ss.borrow() {
+                            tracing::debug!("DEBUG: Session ScreenSaver task exiting");
+                            break;
+                        }
+                    }
                 }
             }
             Ok::<(), anyhow::Error>(())

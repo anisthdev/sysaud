@@ -28,6 +28,10 @@ impl Detector for UsbDetector {
 
     async fn start(self: Arc<Self>, _ctx: DetectorContext, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
         let (tx, mut rx) = mpsc::channel::<(String, String, String, std::path::PathBuf)>(100);
+        let tx_clone = tx.clone();
+        let mut tx = Some(tx);
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let running_thread = running.clone();
 
         std::thread::spawn(move || {
             let monitor = match udev::MonitorBuilder::new() {
@@ -74,6 +78,9 @@ impl Detector for UsbDetector {
             tracing::info!("USB detector: starting poll loop");
 
             loop {
+                if !running_thread.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
                 match poll.poll(&mut events, Some(Duration::from_secs(1))) {
                     Ok(_) => {}
                     Err(e) => {
@@ -123,7 +130,7 @@ impl Detector for UsbDetector {
                                         if action == udev::EventType::Add { "plugged" } else { "unplugged" },
                                         vendor, model, sys_path.display());
 
-                                    if tx.try_send((vendor, model, action.to_string(), sys_path)).is_err() {
+                                    if tx_clone.try_send((vendor, model, action.to_string(), sys_path)).is_err() {
                                         tracing::warn!("USB detector: channel send failed");
                                     }
                                 }
@@ -154,20 +161,29 @@ impl Detector for UsbDetector {
                         let tx_clone = tx.clone();
                         let vendor_clone = vendor.clone();
                         let model_clone = model.clone();
+                        let mut shutdown_plug = shutdown.clone();
                         tokio::spawn(async move {
-                            tokio_time::sleep(Duration::from_millis(500)).await;
-                            let dev_type = task::spawn_blocking(move || {
-                                classify_usb_device_from_syspath(&sys_path_clone)
-                            }).await.unwrap_or_else(|_| "device".to_string());
-                            tracing::info!("USB detector: emitting device-plugged {} {} type={}", vendor_clone, model_clone, dev_type);
-                            let event = Event::new("usb", "device-plugged", {
-                                let mut m = HashMap::new();
-                                m.insert("vendor".to_string(), vendor_clone);
-                                m.insert("model".to_string(), model_clone);
-                                m.insert("type".to_string(), dev_type);
-                                m
-                            });
-                            let _ = tx_clone.send(event).await;
+                            tokio::select! {
+                                _ = tokio_time::sleep(Duration::from_millis(500)) => {
+                                    let dev_type = task::spawn_blocking(move || {
+                                        classify_usb_device_from_syspath(&sys_path_clone)
+                                    }).await.unwrap_or_else(|_| "device".to_string());
+                                    tracing::info!("USB detector: emitting device-plugged {} {} type={}", vendor_clone, model_clone, dev_type);
+                                    let event = Event::new("usb", "device-plugged", {
+                                        let mut m = HashMap::new();
+                                        m.insert("vendor".to_string(), vendor_clone);
+                                        m.insert("model".to_string(), model_clone);
+                                        m.insert("type".to_string(), dev_type);
+                                        m
+                                    });
+                                    let _ = tx_clone.send(event).await;
+                                }
+                                _ = shutdown_plug.changed() => {
+                                    if *shutdown_plug.borrow() {
+                                        tracing::debug!("DEBUG: USB delayed plug task exiting");
+                                    }
+                                }
+                            }
                         });
                     } else {
                         tracing::debug!("USB detector: emitting device-unplugged for {} {}", vendor, model);
@@ -189,6 +205,8 @@ impl Detector for UsbDetector {
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() {
                         tracing::info!("USB detector: received shutdown signal");
+                        running.store(false, std::sync::atomic::Ordering::SeqCst);
+                        drop(tx.take());
                         break;
                     }
                 }
