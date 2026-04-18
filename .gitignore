@@ -1,3 +1,8 @@
 target/
 Cargo.lock
 .codex
+pkg/
+*.pkg.tar.zst
+/sysaud-*.tar.gz
+/src/sysaud-*.tar.gz
+/src/sysaud-*/
