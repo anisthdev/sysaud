@@ -13,7 +13,7 @@ const NOTIFY_PATH: &str = "/org/freedesktop/Notifications";
 const NOTIFY_IFACE: &str = "org.freedesktop.Notifications";
 
 const EVENT_APP_NAMES: &[(&str, &str)] = &[
-    ("display.brightness-changed", "sysaud-brightness-notification"),
+    ("display.brightness-changed", "volume-notification"),
     ("audio.volume-changed", "volume-notification"),
     ("audio.mute-changed", "volume-notification"),
     ("audio.default-sink-changed", "sysaud-audio"),
@@ -347,7 +347,7 @@ pub fn send_notification(
 
 #[cfg(test)]
 mod tests {
-    use super::{expand_template, parse_icon_theme_output};
+    use super::{expand_template, get_app_name, parse_icon_theme_output};
     use std::collections::HashMap;
 
     #[test]
@@ -369,5 +369,13 @@ mod tests {
             Some("Papirus")
         );
         assert_eq!(parse_icon_theme_output("''\n"), None);
+    }
+
+    #[test]
+    fn brightness_uses_volume_notification_app_name() {
+        assert_eq!(
+            get_app_name("display.brightness-changed", "display"),
+            "volume-notification"
+        );
     }
 }
