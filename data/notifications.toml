@@ -12,7 +12,7 @@
 "network.network-connected" = { summary = "Network Connected", body = "{name}", icon = "network-wired" }
 "network.network-disconnected" = { summary = "Network Lost", body = "", icon = "network-offline" }
 "network.vpn-connected" = { summary = "VPN Connected", body = "{name}", icon = "network-vpn" }
-"network.vpn-disconnected" = { summary = "VPN Disconnected", body = "{name}", icon = "network-offline" }
+"network.vpn-disconnected" = { summary = "VPN Disconnected", body = "", icon = "network-vpn" }
 "bluetooth.device-connected" = { summary = "Bluetooth Connected", body = "{device}", icon = "bluetooth-active" }
 "bluetooth.device-disconnected" = { summary = "Bluetooth Disconnected", body = "{device}", icon = "bluetooth-disconnected" }
 "bluetooth.adapter-on" = { summary = "Bluetooth On", body = "", icon = "bluetooth-active" }

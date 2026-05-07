@@ -171,19 +171,11 @@ impl Detector for VpnDetector {
 
     async fn start(self: Arc<Self>, ctx: DetectorContext, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
         let rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
             .interface(NM_VPN_CONN_IFACE)?
             .member("VpnStateChanged")?
             .build();
-        dbus::register_match_rules(&ctx.system_bus, vec![rule]).await?;
-
-        let proxy: zbus::Proxy = zbus::Proxy::new(
-            &ctx.system_bus,
-            NM_BUS,
-            "/org/freedesktop/NetworkManager/VPN",
-            NM_VPN_CONN_IFACE,
-        ).await?;
-
-        let mut stream = proxy.receive_signal("VpnStateChanged").await?;
+        let mut stream = zbus::MessageStream::for_match_rule(rule, &ctx.system_bus, None).await?;
 
         tracing::info!("VPN detector: monitoring NetworkManager VPN states...");
 
@@ -202,6 +194,13 @@ impl Detector for VpnDetector {
                         Some(s) => s,
                         None => break,
                     };
+                    let signal = match signal {
+                        Ok(msg) => msg,
+                        Err(e) => {
+                            tracing::warn!("VPN detector: failed to read signal: {}", e);
+                            continue;
+                        }
+                    };
                     let (state, _reason): (u32, u32) = match signal.body().deserialize() {
                         Ok(body) => body,
                         Err(e) => {
@@ -217,8 +216,11 @@ impl Detector for VpnDetector {
                     }
 
                     let mut details = HashMap::new();
-                    if let Ok(name) = self.get_property::<String>(&ctx.system_bus, NM_BUS, path.as_str(), NM_ACTIVE_CONN_IFACE, "Id").await {
+                    if let Some(name) = self.resolve_vpn_name(&ctx.system_bus, path.as_str()).await {
                         details.insert("name".to_string(), name);
+                    }
+                    if let Some(name) = details.get("name").cloned() {
+                        details.insert("ifname".to_string(), name);
                     }
 
                     match state {
@@ -232,6 +234,7 @@ impl Detector for VpnDetector {
                             if state == VPN_STATE_FAILED {
                                 details.insert("failed".to_string(), "true".to_string());
                             }
+                            details.entry("ifname".to_string()).or_insert_with(|| "VPN".to_string());
                             let event = Event::new("network", "vpn-disconnected", details);
                             let _ = self.event_tx.send(event).await;
                         }
@@ -249,6 +252,34 @@ impl Detector for VpnDetector {
 }
 
 impl VpnDetector {
+    async fn resolve_vpn_name(&self, bus: &zbus::Connection, path: &str) -> Option<String> {
+        if let Ok(name) = self
+            .get_property::<String>(bus, NM_BUS, path, NM_ACTIVE_CONN_IFACE, "Id")
+            .await
+        {
+            return Some(name);
+        }
+
+        let connection_path = self
+            .get_property::<zvariant::OwnedObjectPath>(bus, NM_BUS, path, NM_ACTIVE_CONN_IFACE, "Connection")
+            .await
+            .ok()?;
+
+        let proxy: zbus::Proxy = zbus::Proxy::new(
+            bus,
+            NM_BUS,
+            connection_path.as_str(),
+            "org.freedesktop.NetworkManager.Settings.Connection",
+        )
+        .await
+        .ok()?;
+
+        let reply = proxy.call_method("GetSettings", &()).await.ok()?;
+        let settings: HashMap<String, HashMap<String, zvariant::OwnedValue>> = reply.body().deserialize().ok()?;
+        let connection = settings.get("connection")?;
+        connection.get("id")?.downcast_ref::<String>().ok()
+    }
+
     async fn get_property<T: serde::de::DeserializeOwned + zvariant::Type + TryFrom<zvariant::OwnedValue, Error = zvariant::Error>>(
         &self,
         bus: &zbus::Connection,

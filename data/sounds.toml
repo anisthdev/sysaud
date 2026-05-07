@@ -10,7 +10,7 @@
 "network.wifi-connected" = "network-connectivity-established"
 "network.network-connected" = "network-connectivity-established"
 "network.network-disconnected" = "network-connectivity-lost"
-"network.vpn-connected" = "service-login"
+"network.vpn-connected" = "service-logout"
 "network.vpn-disconnected" = "service-logout"
 "bluetooth.device-connected" = "device-added"
 "bluetooth.device-disconnected" = "device-removed"
