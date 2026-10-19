@@ -2,9 +2,12 @@ use crate::config::notifications::NotificationsConfig;
 use crate::config::SharedConfig;
 use crate::event::Event;
 use crate::event::handler::EventHandler;
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use zbus::Connection;
 use zvariant::Value;
 
@@ -219,12 +222,26 @@ fn resolve_icon_path(icon_name: &str) -> String {
     icon_name.to_string()
 }
 
+/// The icon theme rarely changes, so don't fork gsettings for every notification
+/// (a burst of volume key presses would otherwise spawn one per event).
+const ICON_THEME_TTL: Duration = Duration::from_secs(60);
+static ICON_THEME_CACHE: Lazy<Mutex<Option<(Instant, Option<String>)>>> = Lazy::new(|| Mutex::new(None));
+
 fn current_icon_theme() -> Option<String> {
-    std::process::Command::new("gsettings")
+    let mut cache = ICON_THEME_CACHE.lock();
+    if let Some((fetched_at, theme)) = cache.as_ref() {
+        if fetched_at.elapsed() < ICON_THEME_TTL {
+            return theme.clone();
+        }
+    }
+
+    let theme = std::process::Command::new("gsettings")
         .args(["get", "org.gnome.desktop.interface", "icon-theme"])
         .output()
         .ok()
-        .and_then(|out| parse_icon_theme_output(&String::from_utf8_lossy(&out.stdout)))
+        .and_then(|out| parse_icon_theme_output(&String::from_utf8_lossy(&out.stdout)));
+    *cache = Some((Instant::now(), theme.clone()));
+    theme
 }
 
 fn parse_icon_theme_output(output: &str) -> Option<String> {
