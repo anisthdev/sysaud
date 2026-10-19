@@ -1,6 +1,6 @@
 [package]
 name = "sysaud"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Linux system event sound and notification daemon"
 license = "MIT"
