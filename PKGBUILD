@@ -15,7 +15,7 @@ optdepends=(
     'pipewire-pulse: audio playback via pw-play'
     'pulseaudio: audio playback via paplay'
     'alsa-utils: audio playback via aplay (fallback)'
-    'libpulse: volume control and playback'
+    'libpulse: audio playback via paplay (fallback)'
 )
 makedepends=('cargo' 'pkg-config')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
