@@ -21,12 +21,14 @@ mod usb;
 const MAX_RESTART_ATTEMPTS: u32 = 5;
 const INITIAL_BACKOFF_MS: u64 = 1000;
 const MAX_BACKOFF_MS: u64 = 60000;
+/// How long all detectors together get to stop before stragglers are aborted.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
 pub struct DetectorRegistry {
     event_tx: mpsc::Sender<Event>,
     shutdown_tx: watch::Sender<bool>,
-    handles: Arc<tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    handles: Arc<tokio::sync::Mutex<Vec<(&'static str, tokio::task::JoinHandle<()>)>>>,
 }
 
 impl DetectorRegistry {
@@ -74,15 +76,22 @@ impl DetectorRegistry {
         
         let handles: Vec<_> = self.handles.lock().await.drain(..).collect();
         tracing::debug!("DEBUG: Registry shutdown - draining {} handles", handles.len());
-        for (i, handle) in handles.into_iter().enumerate() {
-            tracing::debug!("DEBUG: Awaiting detector handle #{}", i);
-            let _ = handle.await;
-            tracing::debug!("DEBUG: Detector handle #{} finished", i);
+        let deadline = tokio::time::Instant::now() + SHUTDOWN_TIMEOUT;
+        for (name, mut handle) in handles {
+            tracing::debug!("DEBUG: Awaiting detector handle [{}]", name);
+            match tokio::time::timeout_at(deadline, &mut handle).await {
+                Ok(_) => tracing::debug!("DEBUG: Detector handle [{}] finished", name),
+                Err(_) => {
+                    tracing::warn!("[{}] Detector did not stop within {:?}, aborting", name, SHUTDOWN_TIMEOUT);
+                    handle.abort();
+                }
+            }
         }
         tracing::info!("All detectors stopped");
     }
 
-    async fn spawn_with_supervision<D: Detector + 'static>(&self, ctx: DetectorContext, shutdown: watch::Receiver<bool>) {
+    async fn spawn_with_supervision<D: Detector + 'static>(&self, ctx: DetectorContext, mut shutdown: watch::Receiver<bool>) {
+        let detector_name = D::new(self.event_tx.clone()).name();
         let handle = tokio::spawn(async move {
             let mut attempts = 0u32;
             let mut backoff_ms = INITIAL_BACKOFF_MS;
@@ -115,6 +124,11 @@ impl DetectorRegistry {
                             break;
                         }
 
+                        if *shutdown.borrow() {
+                            tracing::info!("[{}] Shutdown in progress, not restarting: {}", name, e);
+                            break;
+                        }
+
                         tracing::warn!(
                             "[{}] Detector failed (attempt {}/{}): {}. Retrying in {}ms",
                             name,
@@ -124,13 +138,19 @@ impl DetectorRegistry {
                             backoff_ms
                         );
 
-                        sleep(Duration::from_millis(backoff_ms)).await;
+                        tokio::select! {
+                            _ = sleep(Duration::from_millis(backoff_ms)) => {}
+                            _ = shutdown.wait_for(|stop| *stop) => {
+                                tracing::info!("[{}] Shutdown during restart backoff, not restarting", name);
+                                break;
+                            }
+                        }
                         backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
                     }
                 }
             }
         });
-        
-        self.handles.lock().await.push(handle);
+
+        self.handles.lock().await.push((detector_name, handle));
     }
 }

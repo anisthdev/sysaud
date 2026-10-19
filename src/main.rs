@@ -161,8 +161,11 @@ async fn run_daemon(args: Args) -> anyhow::Result<()> {
     tracing::debug!("DEBUG: Buses dropped");
 
     tracing::debug!("DEBUG: Awaiting event_loop_handle");
-    let _ = event_loop_handle.await;
-    tracing::debug!("DEBUG: event_loop_handle.await completed");
+    if tokio::time::timeout(std::time::Duration::from_secs(2), event_loop_handle).await.is_err() {
+        tracing::warn!("Event loop did not drain within 2s, exiting anyway");
+    } else {
+        tracing::debug!("DEBUG: event_loop_handle.await completed");
+    }
 
     tracing::info!("sysaud shutdown complete");
     Ok(())

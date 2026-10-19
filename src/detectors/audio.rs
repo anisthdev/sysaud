@@ -8,6 +8,10 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::sync::watch;
+use tokio::time::Duration;
+
+/// Upper bound for one-shot pactl queries; the audio server may be hung or stopping.
+const PACTL_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Default)]
 struct AudioInfo {
@@ -143,6 +147,7 @@ async fn start_pactl_subscribe() -> anyhow::Result<Child> {
         .arg("subscribe")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
         .spawn()?;
 
     Ok(child)
@@ -257,12 +262,27 @@ async fn load_audio_info(kind: AudioKind) -> Option<AudioInfo> {
     })
 }
 
-async fn read_default_name(kind: AudioKind) -> Option<String> {
+async fn pactl(args: &[&str]) -> anyhow::Result<std::process::Output> {
     let output = Command::new("pactl")
-        .arg("info")
-        .output()
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+
+    tokio::time::timeout(PACTL_TIMEOUT, output)
         .await
-        .ok()?;
+        .map_err(|_| anyhow::anyhow!("pactl {} timed out after {:?}", args.join(" "), PACTL_TIMEOUT))?
+        .map_err(Into::into)
+}
+
+async fn read_default_name(kind: AudioKind) -> Option<String> {
+    let output = match pactl(&["info"]).await {
+        Ok(output) => output,
+        Err(e) => {
+            tracing::debug!("Audio detector: {}", e);
+            return None;
+        }
+    };
 
     if !output.status.success() {
         return None;
@@ -282,11 +302,7 @@ async fn read_default_name(kind: AudioKind) -> Option<String> {
 }
 
 async fn read_mute(kind: AudioKind, target: &str) -> anyhow::Result<bool> {
-    let output = Command::new("pactl")
-        .arg(kind.mute_command())
-        .arg(target)
-        .output()
-        .await?;
+    let output = pactl(&[kind.mute_command(), target]).await?;
 
     if !output.status.success() {
         return Ok(false);
@@ -304,11 +320,7 @@ async fn read_mute(kind: AudioKind, target: &str) -> anyhow::Result<bool> {
 }
 
 async fn read_volume(kind: AudioKind, target: &str) -> anyhow::Result<Option<i32>> {
-    let output = Command::new("pactl")
-        .arg(kind.volume_command())
-        .arg(target)
-        .output()
-        .await?;
+    let output = pactl(&[kind.volume_command(), target]).await?;
 
     if !output.status.success() {
         return Ok(None);
@@ -319,12 +331,7 @@ async fn read_volume(kind: AudioKind, target: &str) -> anyhow::Result<Option<i32
 }
 
 async fn friendly_name(kind: AudioKind, target: &str) -> Option<String> {
-    let output = Command::new("pactl")
-        .arg("list")
-        .arg(kind.list_kind())
-        .output()
-        .await
-        .ok()?;
+    let output = pactl(&["list", kind.list_kind()]).await.ok()?;
 
     if !output.status.success() {
         return None;

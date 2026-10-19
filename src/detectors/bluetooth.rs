@@ -12,6 +12,7 @@ use crate::detectors::map_state::{MapTransition, StateMap};
 const BLUEZ_BUS: &str = "org.bluez";
 const BLUEZ_DEVICE_IFACE: &str = "org.bluez.Device1";
 const BLUEZ_ADAPTER_IFACE: &str = "org.bluez.Adapter1";
+const DBUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Clone)]
 pub struct BluetoothDetector {
@@ -145,13 +146,21 @@ impl BluetoothDetector {
         iface: &str,
         prop: &str,
     ) -> zbus::Result<T> {
-        let proxy: zbus::Proxy = zbus::Proxy::new(
-            bus,
-            dest,
-            path,
-            iface,
-        ).await?;
+        // bluetoothd may be stopping (e.g. during system shutdown), so never wait on it unbounded.
+        let lookup = async {
+            let proxy: zbus::Proxy = zbus::proxy::Builder::new(bus)
+                .destination(dest)?
+                .path(path)?
+                .interface(iface)?
+                .cache_properties(zbus::proxy::CacheProperties::No)
+                .build()
+                .await?;
 
-        proxy.get_property(prop).await
+            proxy.get_property(prop).await
+        };
+
+        tokio::time::timeout(DBUS_TIMEOUT, lookup)
+            .await
+            .map_err(|_| zbus::Error::Failure(format!("{iface}.{prop} on {path} timed out after {DBUS_TIMEOUT:?}")))?
     }
 }
