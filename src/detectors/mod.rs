@@ -23,6 +23,9 @@ const INITIAL_BACKOFF_MS: u64 = 1000;
 const MAX_BACKOFF_MS: u64 = 60000;
 /// How long all detectors together get to stop before stragglers are aborted.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+/// A run at least this long counts as healthy, so a later failure starts the
+/// restart budget and backoff over (e.g. surviving many pipewire restarts).
+const HEALTHY_RUN: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct DetectorRegistry {
@@ -103,7 +106,16 @@ impl DetectorRegistry {
                 tracing::info!("[{}] Starting detector", name);
 
                 let shutdown_rx = shutdown.clone();
+                let started_at = tokio::time::Instant::now();
                 let result = Arc::new(detector).start(ctx.clone(), shutdown_rx).await;
+
+                // Detectors return Ok when their event source ends (D-Bus connection
+                // dropped, pactl exited, ...). That is only a graceful stop if we
+                // asked for it; otherwise the source went away and must be retried.
+                let result = match result {
+                    Ok(()) if !*shutdown.borrow() => Err(anyhow::anyhow!("event source ended unexpectedly")),
+                    other => other,
+                };
 
                 match result {
                     Ok(()) => {
@@ -112,6 +124,10 @@ impl DetectorRegistry {
                         break;
                     }
                     Err(e) => {
+                        if started_at.elapsed() >= HEALTHY_RUN {
+                            attempts = 0;
+                            backoff_ms = INITIAL_BACKOFF_MS;
+                        }
                         attempts += 1;
 
                         if attempts > MAX_RESTART_ATTEMPTS {
