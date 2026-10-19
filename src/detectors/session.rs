@@ -42,7 +42,12 @@ impl Detector for SessionDetector {
                     }
                 }
                 let lock_app = config.snapshot().daemon.lock_app.clone();
-                let is_running = Self::is_process_running(&lock_app);
+                let is_running = {
+                    let lock_app = lock_app.clone();
+                    tokio::task::spawn_blocking(move || Self::is_process_running(&lock_app))
+                        .await
+                        .unwrap_or(false)
+                };
 
                 match self_for_poll.locked.update(is_running).await {
                     StateTransition::Initialized | StateTransition::Unchanged => {}
@@ -186,14 +191,20 @@ impl Detector for SessionDetector {
 }
 
 impl SessionDetector {
+    /// Same match as `pgrep -x NAME`: some process's comm equals `name` exactly.
+    /// Reads /proc directly instead of forking pgrep on every poll.
     fn is_process_running(name: &str) -> bool {
-        match std::process::Command::new("pgrep")
-            .arg("-x")
-            .arg(name)
-            .output() {
-            Ok(output) => output.status.success(),
-            Err(_) => false,
-        }
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return false;
+        };
+
+        entries
+            .flatten()
+            .filter(|entry| entry.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit())))
+            .any(|entry| {
+                std::fs::read_to_string(entry.path().join("comm"))
+                    .is_ok_and(|comm| comm.trim_end_matches('\n') == name)
+            })
     }
 }
 
@@ -263,4 +274,18 @@ impl Detector for SuspendDetector {
     }
 
     async fn stop(&self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_running_process_by_exact_comm() {
+        let own = std::fs::read_to_string("/proc/self/comm").unwrap();
+        let own = own.trim_end_matches('\n');
+        assert!(SessionDetector::is_process_running(own));
+        assert!(!SessionDetector::is_process_running(&own[..own.len() - 1]));
+        assert!(!SessionDetector::is_process_running("sysaud-no-such-process"));
+    }
 }
