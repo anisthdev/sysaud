@@ -1,4 +1,6 @@
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+use futures_util::FutureExt;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{sleep, Duration};
 use crate::event::Event;
@@ -32,6 +34,14 @@ pub struct DetectorRegistry {
     event_tx: mpsc::Sender<Event>,
     shutdown_tx: watch::Sender<bool>,
     handles: Arc<tokio::sync::Mutex<Vec<(&'static str, tokio::task::JoinHandle<()>)>>>,
+}
+
+fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("<non-string panic payload>")
 }
 
 impl DetectorRegistry {
@@ -107,7 +117,12 @@ impl DetectorRegistry {
 
                 let shutdown_rx = shutdown.clone();
                 let started_at = tokio::time::Instant::now();
-                let result = Arc::new(detector).start(ctx.clone(), shutdown_rx).await;
+                // A panic inside a detector would otherwise kill this supervisor task
+                // and the detector with it; handle it like any other failure.
+                let result = AssertUnwindSafe(Arc::new(detector).start(ctx.clone(), shutdown_rx))
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|panic| Err(anyhow::anyhow!("panicked: {}", panic_message(&panic))));
 
                 // Detectors return Ok when their event source ends (D-Bus connection
                 // dropped, pactl exited, ...). That is only a graceful stop if we
@@ -168,5 +183,55 @@ impl DetectorRegistry {
         });
 
         self.handles.lock().await.push((detector_name, handle));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static STARTS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Panics on its first run, then behaves until shutdown.
+    #[derive(Clone)]
+    struct FlakyDetector;
+
+    impl Detector for FlakyDetector {
+        fn name(&self) -> &'static str {
+            "flaky"
+        }
+
+        fn new(_event_tx: mpsc::Sender<Event>) -> Self {
+            Self
+        }
+
+        async fn start(self: Arc<Self>, _ctx: DetectorContext, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
+            if STARTS.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("boom");
+            }
+            let _ = shutdown.wait_for(|stop| *stop).await;
+            Ok(())
+        }
+
+        async fn stop(&self) {}
+    }
+
+    #[tokio::test]
+    async fn restarts_a_detector_that_panicked() {
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        let registry = DetectorRegistry::new(event_tx.clone());
+        let ctx = DetectorContext {
+            event_tx,
+            config: crate::config::SharedConfig::new(crate::config::Config::default()),
+            session_bus: zbus::Connection::session().await.unwrap(),
+            system_bus: zbus::Connection::session().await.unwrap(),
+        };
+
+        registry.spawn_with_supervision::<FlakyDetector>(ctx, registry.shutdown_tx.subscribe()).await;
+        tokio::time::sleep(Duration::from_millis(INITIAL_BACKOFF_MS + 300)).await;
+        assert_eq!(STARTS.load(Ordering::SeqCst), 2, "detector was not restarted after panicking");
+
+        registry.shutdown().await;
     }
 }
