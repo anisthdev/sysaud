@@ -8,10 +8,14 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::sync::watch;
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 
 /// Upper bound for one-shot pactl queries; the audio server may be hung or stopping.
 const PACTL_TIMEOUT: Duration = Duration::from_secs(2);
+/// One volume step emits a burst of change lines (sink, source, and every
+/// filter-chain node); wait for the burst to go quiet and refresh once.
+const BURST_QUIET: Duration = Duration::from_millis(30);
+const BURST_MAX: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Clone, Default)]
 struct AudioInfo {
@@ -46,31 +50,10 @@ impl AudioKind {
         }
     }
 
-    fn default_label(self) -> &'static str {
-        match self {
-            Self::Sink => "Default Sink",
-            Self::Source => "Default Source",
-        }
-    }
-
     fn list_kind(self) -> &'static str {
         match self {
             Self::Sink => "sinks",
             Self::Source => "sources",
-        }
-    }
-
-    fn volume_command(self) -> &'static str {
-        match self {
-            Self::Sink => "get-sink-volume",
-            Self::Source => "get-source-volume",
-        }
-    }
-
-    fn mute_command(self) -> &'static str {
-        match self {
-            Self::Sink => "get-sink-mute",
-            Self::Source => "get-source-mute",
         }
     }
 
@@ -111,7 +94,11 @@ impl Detector for AudioDetector {
                     match line? {
                         Some(line) => {
                             if is_audio_relevant_line(&line) {
+                                let eof = drain_burst(&mut lines).await;
                                 self.refresh_defaults().await;
+                                if eof {
+                                    break;
+                                }
                             } else if !is_client_line(&line) {
                                 tracing::trace!("Audio detector: ignored pactl line: {}", line);
                             }
@@ -153,6 +140,19 @@ async fn start_pactl_subscribe() -> anyhow::Result<Child> {
     Ok(child)
 }
 
+/// Swallow the rest of a burst of pactl events. Returns true if pactl exited.
+async fn drain_burst<R: tokio::io::AsyncBufRead + Unpin>(lines: &mut tokio::io::Lines<R>) -> bool {
+    let deadline = Instant::now() + BURST_MAX;
+    loop {
+        let wait = BURST_QUIET.min(deadline.saturating_duration_since(Instant::now()));
+        match tokio::time::timeout(wait, lines.next_line()).await {
+            Ok(Ok(Some(_))) => continue,
+            Ok(Ok(None)) | Ok(Err(_)) => return true,
+            Err(_) => return false,
+        }
+    }
+}
+
 fn is_client_line(line: &str) -> bool {
     let line = line.trim();
     line.starts_with("Event 'new' on client #") || line.starts_with("Event 'remove' on client #")
@@ -175,16 +175,14 @@ fn is_audio_relevant_line(line: &str) -> bool {
 
 impl AudioDetector {
     async fn initialize_defaults(&self) {
-        let sink = load_audio_info(AudioKind::Sink).await;
-        let source = load_audio_info(AudioKind::Source).await;
+        let (sink, source) = load_both().await;
         let mut snapshot = self.snapshot.lock();
         snapshot.sink = sink;
         snapshot.source = source;
     }
 
     async fn refresh_defaults(&self) {
-        let sink = load_audio_info(AudioKind::Sink).await;
-        let source = load_audio_info(AudioKind::Source).await;
+        let (sink, source) = load_both().await;
 
         let mut events = Vec::new();
         {
@@ -249,19 +247,6 @@ fn make_event(category: String, name: &str, detail: HashMap<String, String>) -> 
     Event::new(category, name.to_string(), detail)
 }
 
-async fn load_audio_info(kind: AudioKind) -> Option<AudioInfo> {
-    let default_name = read_default_name(kind).await?;
-    let device = friendly_name(kind, &default_name).await.unwrap_or(default_name.clone());
-    let muted = read_mute(kind, &default_name).await.unwrap_or(false);
-    let volume = read_volume(kind, &default_name).await.unwrap_or(None);
-
-    Some(AudioInfo {
-        device,
-        volume,
-        muted,
-    })
-}
-
 async fn pactl(args: &[&str]) -> anyhow::Result<std::process::Output> {
     let output = Command::new("pactl")
         .args(args)
@@ -275,101 +260,68 @@ async fn pactl(args: &[&str]) -> anyhow::Result<std::process::Output> {
         .map_err(Into::into)
 }
 
-async fn read_default_name(kind: AudioKind) -> Option<String> {
-    let output = match pactl(&["info"]).await {
-        Ok(output) => output,
+/// Default sink and source, from one `pactl info`.
+async fn load_both() -> (Option<AudioInfo>, Option<AudioInfo>) {
+    let info = match pactl(&["-f", "json", "info"]).await {
+        Ok(output) if output.status.success() => output.stdout,
+        Ok(_) => return (None, None),
         Err(e) => {
             tracing::debug!("Audio detector: {}", e);
-            return None;
+            return (None, None);
         }
     };
+    let Ok(info) = serde_json::from_slice::<serde_json::Value>(&info) else {
+        return (None, None);
+    };
 
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let label = kind.default_label();
-
-    for line in stdout.lines() {
-        let line = line.trim();
-        if let Some(value) = line.strip_prefix(label) {
-            return Some(value.trim().trim_start_matches(':').trim().to_string());
-        }
-    }
-
-    None
+    let sink = info["default_sink_name"].as_str().map(str::to_owned);
+    let source = info["default_source_name"].as_str().map(str::to_owned);
+    tokio::join!(
+        load_audio_info(AudioKind::Sink, sink),
+        load_audio_info(AudioKind::Source, source),
+    )
 }
 
-async fn read_mute(kind: AudioKind, target: &str) -> anyhow::Result<bool> {
-    let output = pactl(&[kind.mute_command(), target]).await?;
+async fn load_audio_info(kind: AudioKind, default_name: Option<String>) -> Option<AudioInfo> {
+    let default_name = default_name?;
+    let devices = pactl(&["-f", "json", "list", kind.list_kind()])
+        .await
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| output.stdout)
+        .unwrap_or_default();
 
-    if !output.status.success() {
-        return Ok(false);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        let line = line.trim();
-        if let Some(value) = line.strip_prefix("Mute:") {
-            return Ok(value.trim() == "yes");
-        }
-    }
-
-    Ok(false)
+    Some(parse_device_info(&devices, &default_name))
 }
 
-async fn read_volume(kind: AudioKind, target: &str) -> anyhow::Result<Option<i32>> {
-    let output = pactl(&[kind.volume_command(), target]).await?;
-
-    if !output.status.success() {
-        return Ok(None);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(parse_volume_percent(&stdout))
-}
-
-async fn friendly_name(kind: AudioKind, target: &str) -> Option<String> {
-    let output = pactl(&["list", kind.list_kind()]).await.ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut current_name: Option<String> = None;
-
-    for line in stdout.lines() {
-        let line = line.trim();
-        if let Some(name) = line.strip_prefix("Name:") {
-            current_name = Some(name.trim().to_string());
-            continue;
-        }
-
-        if let Some(desc) = line.strip_prefix("Description:") {
-            if current_name.as_deref() == Some(target) {
-                return Some(desc.trim().to_string());
-            }
-        }
-    }
-
-    None
-}
-
-fn parse_volume_percent(output: &str) -> Option<i32> {
-    let mut values = Vec::new();
-
-    for part in output.split('/') {
-        let trimmed = part.trim();
-        let Some(percent) = trimmed.strip_suffix('%') else {
-            continue;
+/// Look `target` up in `pactl -f json list sinks|sources` output. If it can't be
+/// found, fall back to the raw name with unknown volume, as before.
+fn parse_device_info(devices: &[u8], target: &str) -> AudioInfo {
+    let devices: Vec<serde_json::Value> = serde_json::from_slice(devices).unwrap_or_default();
+    let Some(dev) = devices.iter().find(|d| d["name"].as_str() == Some(target)) else {
+        return AudioInfo {
+            device: target.to_string(),
+            volume: None,
+            muted: false,
         };
+    };
 
-        if let Ok(value) = percent.trim().parse::<f32>() {
-            values.push(value.round() as i32);
-        }
+    AudioInfo {
+        device: dev["description"].as_str().unwrap_or(target).to_string(),
+        volume: parse_volume_percent(&dev["volume"]),
+        muted: dev["mute"].as_bool().unwrap_or(false),
     }
+}
+
+/// Average of the per-channel `value_percent` entries, e.g. {"front-left": {"value_percent": "65%"}}.
+fn parse_volume_percent(volume: &serde_json::Value) -> Option<i32> {
+    let values: Vec<i32> = volume
+        .as_object()?
+        .values()
+        .filter_map(|channel| channel["value_percent"].as_str())
+        .filter_map(|p| p.trim().strip_suffix('%')?.trim().parse::<f32>().ok())
+        .map(|v| v.round() as i32)
+        .collect();
 
     if values.is_empty() {
         None
@@ -382,10 +334,34 @@ fn parse_volume_percent(output: &str) -> Option<i32> {
 mod tests {
     use super::*;
 
+    const SINKS: &str = r#"[
+        {"name":"effect_input.laptop_warm","description":"Laptop","mute":false,
+         "volume":{"front-left":{"value":62259,"value_percent":"95%","db":"-1.34 dB"},
+                   "front-right":{"value":58982,"value_percent":"90%","db":"-2.75 dB"}}},
+        {"name":"alsa_output.raw","description":"Laptop (Raw)","mute":true,
+         "volume":{"aux0":{"value":65536,"value_percent":"100%","db":"0.00 dB"}}}
+    ]"#;
+
     #[test]
-    fn parses_volume_percentages() {
-        let output = "Volume: front-left: 65536 / 100% / 0.00 dB, front-right: 65536 / 100% / 0.00 dB";
-        assert_eq!(parse_volume_percent(output), Some(100));
+    fn parses_device_from_json_list() {
+        let info = parse_device_info(SINKS.as_bytes(), "effect_input.laptop_warm");
+        assert_eq!(info.device, "Laptop");
+        assert_eq!(info.volume, Some(92)); // integer mean of 95 and 90, same as the old text parser
+        assert!(!info.muted);
+
+        let raw = parse_device_info(SINKS.as_bytes(), "alsa_output.raw");
+        assert_eq!(raw.device, "Laptop (Raw)");
+        assert_eq!(raw.volume, Some(100));
+        assert!(raw.muted);
+    }
+
+    #[test]
+    fn unknown_device_falls_back_to_raw_name() {
+        let info = parse_device_info(SINKS.as_bytes(), "missing.sink");
+        assert_eq!(info.device, "missing.sink");
+        assert_eq!(info.volume, None);
+        assert!(!info.muted);
+        assert_eq!(parse_device_info(b"not json", "x").device, "x");
     }
 
     #[test]
