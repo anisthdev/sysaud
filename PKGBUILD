@@ -1,6 +1,6 @@
 # Maintainer: asifb
 pkgname=sysaud
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Linux system event sound and notification daemon (Rust)"
 arch=('x86_64')
@@ -23,7 +23,7 @@ sha256sums=('eb1649c4c6739b5810bae44381d51c76134ca215883fd3059d26cd744adce8b9')
 
 build() {
     cd "$pkgname-$pkgver"
-    cargo build --release
+    cargo build --release --locked
 }
 
 package() {
