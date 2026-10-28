@@ -19,7 +19,7 @@ optdepends=(
 )
 makedepends=('cargo' 'pkg-config')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('9c4a369d5c5ba69c3093a3ab46902180d060895d3d36837bb791ad5a38301f58')
+sha256sums=('eb9b5ecd0452617cd4463a41844ae7002589b1eef502b3f1752c904d8f8ee385')
 
 build() {
     cd "$pkgname-$pkgver"
