@@ -1,6 +1,6 @@
 # Maintainer: asifb
 pkgname=sysaud
-pkgver=0.1.2
+pkgver=0.1.3
 pkgrel=1
 pkgdesc="Linux system event sound and notification daemon (Rust)"
 arch=('x86_64')
