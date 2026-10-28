@@ -139,6 +139,7 @@ sound:
   enabled: true
   theme: freedesktop
   custom_dir: ~/sounds
+  volume_debounce_ms: 250
 
 notify:
   enabled: true
@@ -156,6 +157,7 @@ events:
 Notes:
 
 - `sound.custom_dir` can point at your own sound files
+- `sound.volume_debounce_ms` is how long the volume must stay still before its sound plays (default 250)
 - `events.<event-id>.enabled: false` disables an event entirely
 - `events.<event-id>.script` can run a custom command for that event
 - `daemon.log_file` enables JSON-line event logging

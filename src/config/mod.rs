@@ -45,6 +45,13 @@ pub struct SoundConfig {
     pub theme: String,
     #[serde(default)]
     pub custom_dir: Option<PathBuf>,
+    /// How long the volume must stay still before its sound plays
+    #[serde(default = "default_volume_debounce_ms")]
+    pub volume_debounce_ms: u64,
+}
+
+fn default_volume_debounce_ms() -> u64 {
+    250
 }
 
 fn default_true() -> bool {
@@ -102,6 +109,7 @@ impl Default for SoundConfig {
             enabled: true,
             theme: default_theme(),
             custom_dir: None,
+            volume_debounce_ms: default_volume_debounce_ms(),
         }
     }
 }

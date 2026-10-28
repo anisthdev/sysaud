@@ -65,7 +65,7 @@ impl EventHandler for SoundHandler {
 
         let is_path = sound_id.contains('/') || sound_id.starts_with('~');
         if event.id.as_str() == "audio.volume-changed" {
-            schedule_debounced_sound(sound_id.to_string(), config.sound.theme.clone(), config.sound.custom_dir.clone(), is_path);
+            schedule_debounced_sound(sound_id.to_string(), config.sound.theme.clone(), config.sound.custom_dir.clone(), is_path, config.sound.volume_debounce_ms);
             return Ok(());
         }
 
@@ -82,7 +82,7 @@ impl EventHandler for SoundHandler {
     }
 }
 
-fn schedule_debounced_sound(sound_id: String, theme: String, custom_dir: Option<PathBuf>, is_path: bool) {
+fn schedule_debounced_sound(sound_id: String, theme: String, custom_dir: Option<PathBuf>, is_path: bool, delay_ms: u64) {
     let mut guard = AUDIO_VOLUME_DEBOUNCE.lock();
     if guard.as_ref().is_some_and(|handle| handle.is_finished()) {
         *guard = None;
@@ -94,7 +94,7 @@ fn schedule_debounced_sound(sound_id: String, theme: String, custom_dir: Option<
     drop(guard);
 
     let handle = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         if is_path {
             play_file(PathBuf::from(sound_id));
         } else {
