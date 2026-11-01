@@ -18,9 +18,9 @@ When using an unfamiliar library:
 
 ## Project Overview
 
-**Location:** `/home/asif/Projects/sysaud-rs`
+**Location:** `~/Projects/sysaud`
 
-**Original Project:** `/home/asif/Projects/event_detection` (Python daemon called `sysaud`)
+**Original Project:** `~/Projects/archive/sysaud-py` (Python daemon called `sysaud`)
 
 **Purpose:** A Linux system event sound and notification daemon. It listens for system events (via D-Bus, udev, etc.) and fires sounds, desktop notifications, or custom scripts in response. Configured via YAML.
 
@@ -213,7 +213,7 @@ sysaud-rs/
 
 ## Original Python Project Reference
 
-**Location:** `/home/asif/Projects/event_detection`
+**Location:** `~/Projects/archive/sysaud-py`
 
 The Python version (`sysaud`) is the reference implementation. Key files:
 
@@ -229,7 +229,7 @@ The Python version (`sysaud`) is the reference implementation. Key files:
 
 ```bash
 # Build
-cd /home/asif/Projects/sysaud-rs
+cd ~/Projects/sysaud
 cargo build --release
 
 # Run
